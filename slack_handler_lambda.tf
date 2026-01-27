@@ -72,12 +72,9 @@ module "access_requester_slack_handler" {
     CACHE_ENABLED                               = var.cache_enabled
   }
 
-  allowed_triggers = var.create_api_gateway ? {
-    AllowExecutionFromAPIGateway = {
-      service    = "apigateway"
-      source_arn = "${module.http_api[0].api_execution_arn}/*/*${local.api_resource_path}"
-    }
-  } : {}
+  # Only create API Gateway trigger on base function when provisioned concurrency is disabled.
+  # When enabled, the alias module creates the trigger instead.
+  allowed_triggers = var.slack_handler_provisioned_concurrent_executions <= 0 ? local.api_gateway_allowed_triggers : {}
 
   attach_policy_json = true
   policy_json        = data.aws_iam_policy_document.slack_handler.json
@@ -91,6 +88,28 @@ module "access_requester_slack_handler" {
   cloudwatch_logs_retention_in_days = var.logs_retention_in_days
 
   tags = var.tags
+}
+
+module "slack_handler_alias" {
+  source  = "terraform-aws-modules/lambda/aws//modules/alias"
+  version = "8.1.2"
+  count   = var.slack_handler_provisioned_concurrent_executions > 0 ? 1 : 0
+
+  name             = "live"
+  function_name    = module.access_requester_slack_handler.lambda_function_name
+  function_version = module.access_requester_slack_handler.lambda_function_version
+
+  create_version_allowed_triggers = false
+
+  allowed_triggers = local.api_gateway_allowed_triggers
+}
+
+resource "aws_lambda_provisioned_concurrency_config" "slack_handler" {
+  count = var.slack_handler_provisioned_concurrent_executions > 0 ? 1 : 0
+
+  function_name                     = module.access_requester_slack_handler.lambda_function_name
+  qualifier                         = module.slack_handler_alias[0].lambda_alias_name
+  provisioned_concurrent_executions = var.slack_handler_provisioned_concurrent_executions
 }
 
 data "aws_iam_policy_document" "slack_handler" {
@@ -229,7 +248,7 @@ module "http_api" {
   routes = {
     "POST ${local.api_resource_path}" : {
       integration = {
-        uri  = "arn:aws:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.requester_lambda_name}"
+        uri  = local.requester_lambda_arn
         type = "AWS_PROXY"
       }
       throttling_burst_limit = var.api_gateway_throttling_burst_limit

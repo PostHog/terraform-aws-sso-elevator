@@ -456,3 +456,9 @@ variable "identity_store_id" {
   type        = string
   default     = ""
 }
+
+variable "slack_handler_provisioned_concurrent_executions" {
+  description = "Provisioned concurrent executions for the Slack handler Lambda. Set to a positive number to reduce cold starts."
+  type        = number
+  default     = -1
+}
