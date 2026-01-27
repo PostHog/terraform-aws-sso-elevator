@@ -4,15 +4,6 @@ variable "create_api_gateway" {
   default     = true
 }
 
-variable "create_lambda_url" {
-  description = <<-EOT
-  If true, the Lambda function will continue to use the Lambda URL, which will be deprecated in the future
-  If false, Lambda url will be deleted.
-  EOT
-  type        = bool
-  default     = true
-}
-
 variable "ecr_repo_name" {
   description = "The name of the ECR repository."
   type        = string

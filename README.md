@@ -416,15 +416,9 @@ Notes:
 SSO Elevator uses slack channels to communicate with users. But there is a use case of SSO Elevator where only approvers are members of a channel, so no one except them can see who has access where. And when this is the case, requesters don't get any feedback about their requests. To solve this problem, SSO Elevator can send direct messages to users if they are not in the channel. To enable this feature, your SSO Elevator slack app should have the following permissions: ("channels:read", "groups:read", "im:write"). And `send_dm_if_user_not_in_channel` variable should be set to true. If you are updating from the previous version but for a time being you can't update slack app permissions, you can use `send_dm_if_user_not_in_channel` variable to disable this feature so it won't break your current setup.
 
 ## API gateway feature
-To address the [lambda-1](https://docs.aws.amazon.com/securityhub/latest/userguide/lambda-controls.html#lambda-1) SecurityHub control alert triggered by the default creation of a FunctionURLAllowPublicAccess resource-based policy for lambda, in 1.4.0 release module will eventually migrate to the usage of API Gateway by default. You still can use lambda URL to seamlessly migrate to the API Gateway url, but it is deprecated and will be removed in future releases. You can use the following variables to control the behavior:
+The module uses API Gateway to expose the Lambda function to Slack. This avoids the [lambda-1](https://docs.aws.amazon.com/securityhub/latest/userguide/lambda-controls.html#lambda-1) SecurityHub control alert that would be triggered by using Lambda function URLs with a FunctionURLAllowPublicAccess resource-based policy.
 
-```hcl
-create_api_gateway = true # This will create an API Gateway for the requester lambda
-create_lambda_url = false # This will delete lambda url
-```
-
-To fix the Security Hub issue when migrating to API Gateway, manually delete the FunctionURLAllowPublicAccess policy statement in the AWS Console.
-**After updating the module, you can find the API URL in the output of the module. Please don't forget to update the Slack App manifest with the new URL.**
+The API Gateway URL is available in the `requester_api_endpoint_url` output. Use this URL as the Request URL in your Slack App manifest.
 
 # Deployment and Usage
 
@@ -632,8 +626,8 @@ group_config = [
 ]
 }
 
-output "aws_sso_elevator_lambda_function_url" {
-  value = module.aws_sso_elevator.lambda_function_url
+output "aws_sso_elevator_api_endpoint_url" {
+  value = module.aws_sso_elevator.requester_api_endpoint_url
 }
 ```
 
@@ -643,7 +637,7 @@ output "aws_sso_elevator_lambda_function_url" {
 3. Click `From an app manifest`
 4. Select workspace, click `next`
 5. Choose `yaml` for app manifest format
-6. Update lambda url (from output `aws_sso_elevator_lambda_function_url`) to `request_url` field and paste the following into the text box: 
+6. Update the request URL (from output `requester_api_endpoint_url`) in the `request_url` field and paste the following into the text box: 
 ```yaml
 display_information:
   name: AWS SSO Access Elevator
@@ -680,7 +674,7 @@ oauth_config:
 settings:
   interactivity:
     is_enabled: true
-    request_url: <LAMBDA URL GOES HERE - CHECK LAMBDA CONFIGURATION IN AWS CONSOLE OR GET IT FORM TERRAFORM OUTPUT> 
+    request_url: <API GATEWAY URL GOES HERE - GET IT FROM THE requester_api_endpoint_url TERRAFORM OUTPUT> 
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
@@ -775,7 +769,6 @@ settings:
 | <a name="input_config_bucket_kms_key_arn"></a> [config\_bucket\_kms\_key\_arn](#input\_config\_bucket\_kms\_key\_arn) | ARN of the KMS key to use for config S3 bucket encryption. If not provided, uses AES256 encryption. | `string` | `null` | no |
 | <a name="input_config_bucket_name"></a> [config\_bucket\_name](#input\_config\_bucket\_name) | Name of the S3 bucket for storing configuration and cache data (accounts, permission sets, and future config files) | `string` | `"sso-elevator-config"` | no |
 | <a name="input_create_api_gateway"></a> [create\_api\_gateway](#input\_create\_api\_gateway) | If true, module will create & configure API Gateway for the Lambda function | `bool` | `true` | no |
-| <a name="input_create_lambda_url"></a> [create\_lambda\_url](#input\_create\_lambda\_url) | If true, the Lambda function will continue to use the Lambda URL, which will be deprecated in the future<br/>If false, Lambda url will be deleted. | `bool` | `true` | no |
 | <a name="input_ecr_owner_account_id"></a> [ecr\_owner\_account\_id](#input\_ecr\_owner\_account\_id) | In what account is the ECR repository located. | `string` | `"222341826240"` | no |
 | <a name="input_ecr_repo_name"></a> [ecr\_repo\_name](#input\_ecr\_repo\_name) | The name of the ECR repository. | `string` | `"aws-sso-elevator"` | no |
 | <a name="input_ecr_repo_tag"></a> [ecr\_repo\_tag](#input\_ecr\_repo\_tag) | The tag of the image in the ECR repository. | `string` | `"4.1.0"` | no |
@@ -825,7 +818,6 @@ settings:
 | <a name="output_attribute_syncer_lambda_name"></a> [attribute\_syncer\_lambda\_name](#output\_attribute\_syncer\_lambda\_name) | The name of the attribute syncer Lambda function. |
 | <a name="output_config_s3_bucket_arn"></a> [config\_s3\_bucket\_arn](#output\_config\_s3\_bucket\_arn) | The ARN of the S3 bucket for storing configuration and cache data. |
 | <a name="output_config_s3_bucket_name"></a> [config\_s3\_bucket\_name](#output\_config\_s3\_bucket\_name) | The name of the S3 bucket for storing configuration and cache data. |
-| <a name="output_lambda_function_url"></a> [lambda\_function\_url](#output\_lambda\_function\_url) | value for the access\_requester lambda function URL |
 | <a name="output_requester_api_endpoint_url"></a> [requester\_api\_endpoint\_url](#output\_requester\_api\_endpoint\_url) | The full URL to invoke the API. Pass this URL into the Slack App manifest as the Request URL. |
 | <a name="output_sso_elevator_bucket_id"></a> [sso\_elevator\_bucket\_id](#output\_sso\_elevator\_bucket\_id) | The name of the SSO elevator bucket. |
 <!-- END_TF_DOCS -->
