@@ -430,9 +430,9 @@ AWS recommends delegating SSO administration to a separate “delegated SSO admi
 ## Build Process
 There are three ways to build an SSO elevator:
 
-Using pre-created images pulled from ECR (Default)
-Using Docker build to build images locally (provide the variable use_pre_created_image = false)
-There is also an option to host ECR yourself by providing the following variables:
+1. Using pre-created images pulled from ECR (Default)
+2. Using Docker build to build images locally (provide the variable use_pre_created_image = false)
+3. There is also an option to host ECR yourself by providing the following variables:
 ```hcl
 ecr_repo_name = "example_repo_name"
 ecr_owner_account_id = "<example_account_id>"
