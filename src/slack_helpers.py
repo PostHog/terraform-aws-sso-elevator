@@ -69,13 +69,11 @@ class RequestForAccessView:
             callback_id=cls.CALLBACK_ID,
             submit=PlainTextObject(text="Request"),
             close=PlainTextObject(text="Cancel"),
-            title=PlainTextObject(text="Get AWS access"),
+            title=PlainTextObject(text="Request AWS access"),
             blocks=[
-                SectionBlock(text=MarkdownTextObject(text=":wave: Hey! Please fill form below to request AWS access.")),
-                DividerBlock(),
                 SectionBlock(
                     block_id=cls.DURATION_BLOCK_ID,
-                    text=MarkdownTextObject(text="Select the duration for which the authorization will be provided"),
+                    text=MarkdownTextObject(text="Access duration"),
                     accessory=StaticSelectElement(
                         action_id=cls.DURATION_ACTION_ID,
                         initial_option=get_max_duration_block(cfg)[0],
@@ -85,17 +83,17 @@ class RequestForAccessView:
                 ),
                 InputBlock(
                     block_id=cls.REASON_BLOCK_ID,
-                    label=PlainTextObject(text="Why do you need access?"),
+                    label=PlainTextObject(text="Reason"),
                     element=PlainTextInputElement(
                         action_id=cls.REASON_ACTION_ID,
-                        placeholder=PlainTextObject(text="Reason will be saved in audit logs. Please be specific."),
+                        placeholder=PlainTextObject(text="What will this access be used for?"),
                         multiline=True,
                     ),
                 ),
                 DividerBlock(),
                 SectionBlock(
                     text=MarkdownTextObject(
-                        text="Remember to use access responsibly. All actions (AWS API calls) are being recorded.",
+                        text="Remember to use your access responsibly. All AWS actions are logged.",
                     ),
                 ),
                 SectionBlock(
@@ -117,7 +115,7 @@ class RequestForAccessView:
         sorted_accounts = sorted(accounts, key=lambda account: account.name)
         return InputBlock(
             block_id=cls.ACCOUNT_BLOCK_ID,
-            label=PlainTextObject(text="Select account"),
+            label=PlainTextObject(text="Account"),
             element=StaticSelectElement(
                 action_id=cls.ACCOUNT_ACTION_ID,
                 placeholder=PlainTextObject(text="Select account"),
@@ -132,7 +130,7 @@ class RequestForAccessView:
         sorted_permission_sets = sorted(permission_sets, key=lambda permission_set: permission_set.name)
         return InputBlock(
             block_id=cls.PERMISSION_SET_BLOCK_ID,
-            label=PlainTextObject(text="Select permission set"),
+            label=PlainTextObject(text="Permission set"),
             element=StaticSelectElement(
                 action_id=cls.PERMISSION_SET_ACTION_ID,
                 placeholder=PlainTextObject(text="Select permission set"),
@@ -544,7 +542,7 @@ class RequestForGroupAccessView:
             callback_id=cls.CALLBACK_ID,
             submit=PlainTextObject(text="Request"),
             close=PlainTextObject(text="Cancel"),
-            title=PlainTextObject(text="Get AWS access"),
+            title=PlainTextObject(text="Request AWS access"),
             blocks=[
                 SectionBlock(text=MarkdownTextObject(text=":wave: Hey! Please fill form below to request access to AWS SSO group.")),
                 DividerBlock(),
