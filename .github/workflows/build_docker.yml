@@ -9,6 +9,10 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  REGISTRY: 795637471508.dkr.ecr.us-east-1.amazonaws.com
 
 jobs:
   build-and-push:
@@ -16,21 +20,20 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
         with:
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-region: eu-central-1
+          role-to-assume: ${{ secrets.AWS_ECR_PUBLISH_IAM_ROLE }}
+          aws-region: us-east-1
     
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
 
       - name: Get short SHA
         id: get_sha
@@ -51,7 +54,7 @@ jobs:
           context: .
           file: src/docker/Dockerfile.requester
           push: true
-          tags: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.eu-central-1.amazonaws.com/aws-sso-elevator:requester-${{ env.GIT_TAG }}
+          tags: ${{ env.REGISTRY }}/aws-sso-elevator:requester-${{ env.GIT_TAG }}
           provenance: false
 
       - name: Build and push revoker image
@@ -60,7 +63,7 @@ jobs:
           context: .
           file: src/docker/Dockerfile.revoker
           push: true
-          tags: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.eu-central-1.amazonaws.com/aws-sso-elevator:revoker-${{ env.GIT_TAG }}
+          tags: ${{ env.REGISTRY }}/aws-sso-elevator:revoker-${{ env.GIT_TAG }}
           provenance: false
 
       - name: Build and push attribute syncer image
@@ -69,5 +72,5 @@ jobs:
           context: .
           file: src/docker/Dockerfile.attribute_syncer
           push: true
-          tags: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.eu-central-1.amazonaws.com/aws-sso-elevator:attribute-syncer-${{ env.GIT_TAG }}
+          tags: ${{ env.REGISTRY }}/aws-sso-elevator:attribute-syncer-${{ env.GIT_TAG }}
           provenance: false
