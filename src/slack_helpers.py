@@ -60,6 +60,7 @@ class RequestForAccessView:
     DURATION_ACTION_ID = "duration_picker_action"
 
     LOADING_BLOCK_ID = "loading"
+    PERMISSION_SET_PLACEHOLDER_BLOCK_ID = "permission_set_placeholder"
 
     @classmethod
     def build(cls) -> View:
@@ -143,20 +144,42 @@ class RequestForAccessView:
         )
 
     @classmethod
-    def update_with_accounts_and_permission_sets(
-        cls, accounts: list[entities.aws.Account], permission_sets: list[entities.aws.PermissionSet]
-    ) -> View:
+    def update_with_accounts(cls, accounts: list[entities.aws.Account]) -> View:
         view = cls.build()
         view.blocks = remove_blocks(view.blocks, block_ids=[cls.LOADING_BLOCK_ID])
         view.blocks = insert_blocks(
             blocks=view.blocks,
             blocks_to_insert=[
                 cls.build_select_account_input_block(accounts),
-                cls.build_select_permission_set_input_block(permission_sets),
+                SectionBlock(
+                    block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+                    text=MarkdownTextObject(text=":point_up: Select an account to see available permission sets"),
+                ),
             ],
             after_block_id=cls.REASON_BLOCK_ID,
         )
         return view
+
+    @classmethod
+    def update_with_permission_sets(cls, view_blocks: list, permission_sets: list[entities.aws.PermissionSet]) -> View:
+        view = cls.build()
+        # Start from the current blocks, remove placeholder
+        blocks = remove_blocks(view_blocks, block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID])
+        # Insert permission set dropdown after account dropdown
+        blocks = insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[cls.build_select_permission_set_input_block(permission_sets)],
+            after_block_id=cls.ACCOUNT_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return view
+
+    @classmethod
+    def build_no_permission_sets_block(cls) -> SectionBlock:
+        return SectionBlock(
+            block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+            text=MarkdownTextObject(text=":warning: No permission sets available for this account"),
+        )
 
     @classmethod
     def parse(cls, obj: dict) -> RequestForAccess:

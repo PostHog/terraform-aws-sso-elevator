@@ -40,6 +40,17 @@ def get_affected_statements(statements: FrozenSet[Statement], account_id: str, p
     return frozenset(statement for statement in statements if statement.affects(account_id, permission_set_name))
 
 
+def get_permission_sets_for_account(statements: FrozenSet[Statement], account_id: str) -> set[str]:
+    """Return permission set names valid for given account based on statements."""
+    permission_sets: set[str] = set()
+    for statement in statements:
+        if account_id in statement.resource or "*" in statement.resource:
+            if "*" in statement.permission_set:
+                return {"*"}
+            permission_sets.update(statement.permission_set)
+    return permission_sets
+
+
 class OUStatement(BaseStatement):
     resource_type: ResourceType = Field(default=ResourceType.OU, frozen=True)
     resource: FrozenSet[Union[AWSOUName, WildCard]]
