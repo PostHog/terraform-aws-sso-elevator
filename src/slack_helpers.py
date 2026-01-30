@@ -60,6 +60,7 @@ class RequestForAccessView:
     DURATION_ACTION_ID = "duration_picker_action"
 
     LOADING_BLOCK_ID = "loading"
+    PERMISSION_SET_PLACEHOLDER_BLOCK_ID = "permission_set_placeholder"
 
     @classmethod
     def build(cls) -> View:
@@ -68,13 +69,11 @@ class RequestForAccessView:
             callback_id=cls.CALLBACK_ID,
             submit=PlainTextObject(text="Request"),
             close=PlainTextObject(text="Cancel"),
-            title=PlainTextObject(text="Get AWS access"),
+            title=PlainTextObject(text="Request AWS access"),
             blocks=[
-                SectionBlock(text=MarkdownTextObject(text=":wave: Hey! Please fill form below to request AWS access.")),
-                DividerBlock(),
                 SectionBlock(
                     block_id=cls.DURATION_BLOCK_ID,
-                    text=MarkdownTextObject(text="Select the duration for which the authorization will be provided"),
+                    text=MarkdownTextObject(text="Access duration"),
                     accessory=StaticSelectElement(
                         action_id=cls.DURATION_ACTION_ID,
                         initial_option=get_max_duration_block(cfg)[0],
@@ -84,17 +83,17 @@ class RequestForAccessView:
                 ),
                 InputBlock(
                     block_id=cls.REASON_BLOCK_ID,
-                    label=PlainTextObject(text="Why do you need access?"),
+                    label=PlainTextObject(text="Reason"),
                     element=PlainTextInputElement(
                         action_id=cls.REASON_ACTION_ID,
-                        placeholder=PlainTextObject(text="Reason will be saved in audit logs. Please be specific."),
+                        placeholder=PlainTextObject(text="What will this access be used for?"),
                         multiline=True,
                     ),
                 ),
                 DividerBlock(),
                 SectionBlock(
                     text=MarkdownTextObject(
-                        text="Remember to use access responsibly. All actions (AWS API calls) are being recorded.",
+                        text="Remember to use your access responsibly. All AWS actions are logged.",
                     ),
                 ),
                 SectionBlock(
@@ -116,7 +115,7 @@ class RequestForAccessView:
         sorted_accounts = sorted(accounts, key=lambda account: account.name)
         return InputBlock(
             block_id=cls.ACCOUNT_BLOCK_ID,
-            label=PlainTextObject(text="Select account"),
+            label=PlainTextObject(text="Account"),
             element=StaticSelectElement(
                 action_id=cls.ACCOUNT_ACTION_ID,
                 placeholder=PlainTextObject(text="Select account"),
@@ -131,7 +130,7 @@ class RequestForAccessView:
         sorted_permission_sets = sorted(permission_sets, key=lambda permission_set: permission_set.name)
         return InputBlock(
             block_id=cls.PERMISSION_SET_BLOCK_ID,
-            label=PlainTextObject(text="Select permission set"),
+            label=PlainTextObject(text="Permission set"),
             element=StaticSelectElement(
                 action_id=cls.PERMISSION_SET_ACTION_ID,
                 placeholder=PlainTextObject(text="Select permission set"),
@@ -143,20 +142,42 @@ class RequestForAccessView:
         )
 
     @classmethod
-    def update_with_accounts_and_permission_sets(
-        cls, accounts: list[entities.aws.Account], permission_sets: list[entities.aws.PermissionSet]
-    ) -> View:
+    def update_with_accounts(cls, accounts: list[entities.aws.Account]) -> View:
         view = cls.build()
         view.blocks = remove_blocks(view.blocks, block_ids=[cls.LOADING_BLOCK_ID])
         view.blocks = insert_blocks(
             blocks=view.blocks,
             blocks_to_insert=[
                 cls.build_select_account_input_block(accounts),
-                cls.build_select_permission_set_input_block(permission_sets),
+                SectionBlock(
+                    block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+                    text=MarkdownTextObject(text=":point_up: Select an account to see available permission sets"),
+                ),
             ],
             after_block_id=cls.REASON_BLOCK_ID,
         )
         return view
+
+    @classmethod
+    def update_with_permission_sets(cls, view_blocks: list, permission_sets: list[entities.aws.PermissionSet]) -> View:
+        view = cls.build()
+        # Start from the current blocks, remove placeholder
+        blocks = remove_blocks(view_blocks, block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID])
+        # Insert permission set dropdown after account dropdown
+        blocks = insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[cls.build_select_permission_set_input_block(permission_sets)],
+            after_block_id=cls.ACCOUNT_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return view
+
+    @classmethod
+    def build_no_permission_sets_block(cls) -> SectionBlock:
+        return SectionBlock(
+            block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+            text=MarkdownTextObject(text=":warning: No permission sets available for this account"),
+        )
 
     @classmethod
     def parse(cls, obj: dict) -> RequestForAccess:
@@ -521,7 +542,7 @@ class RequestForGroupAccessView:
             callback_id=cls.CALLBACK_ID,
             submit=PlainTextObject(text="Request"),
             close=PlainTextObject(text="Cancel"),
-            title=PlainTextObject(text="Get AWS access"),
+            title=PlainTextObject(text="Request AWS access"),
             blocks=[
                 SectionBlock(text=MarkdownTextObject(text=":wave: Hey! Please fill form below to request access to AWS SSO group.")),
                 DividerBlock(),

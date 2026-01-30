@@ -2,6 +2,7 @@ from datetime import timedelta
 from typing import Callable
 
 import boto3
+import jmespath as jp
 from slack_bolt import Ack, App, BoltContext
 from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 from slack_sdk import WebClient
@@ -15,6 +16,7 @@ import organizations
 import schedule
 import slack_helpers
 import sso
+import statement
 from errors import SSOUserNotFound, handle_errors
 
 logger = config.get_logger(service="main")
@@ -139,11 +141,10 @@ def load_select_options_for_group_access_request(client: WebClient, body: dict) 
 
 
 def load_select_options_for_account_access_request(client: WebClient, body: dict) -> SlackResponse:
-    logger.info("Loading select options for view (accounts and permission sets)")
+    logger.info("Loading select options for view (accounts only)")
     logger.debug("Request body", extra={"body": body})
 
     accounts = organizations.get_accounts_from_config_with_cache(org_client=org_client, s3_client=s3_client, cfg=cfg)
-    permission_sets = sso.get_permission_sets_from_config_with_cache(sso_client=sso_client, s3_client=s3_client, cfg=cfg)
 
     user_id = body.get("user", {}).get("id")
     callback_id = slack_helpers.RequestForAccessView.CALLBACK_ID
@@ -156,15 +157,12 @@ def load_select_options_for_account_access_request(client: WebClient, body: dict
             "This happens when Lambda container is recycled between shortcut invocations. "
             "Opening a new view as fallback."
         )
-        # Fallback: open a new view with the data already loaded
         trigger_id = body["trigger_id"]
-        view = slack_helpers.RequestForAccessView.update_with_accounts_and_permission_sets(
-            accounts=accounts, permission_sets=permission_sets
-        )
+        view = slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts)
         return client.views_open(trigger_id=trigger_id, view=view)
 
     logger.debug(f"Updating view with view_id from key: {view_key}")
-    view = slack_helpers.RequestForAccessView.update_with_accounts_and_permission_sets(accounts=accounts, permission_sets=permission_sets)
+    view = slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts)
     return client.views_update(view_id=view_id, view=view)
 
 
@@ -479,3 +477,50 @@ app.view(slack_helpers.RequestForGroupAccessView.CALLBACK_ID)(
 @app.action("duration_picker_action")
 def handle_duration_picker_action(ack):  # noqa: ANN201, ANN001
     ack()
+
+
+@app.action(slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID)
+def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackResponse:
+    ack()
+    logger.info("Handling account selection")
+
+    account_id = jp.search(
+        f"view.state.values.{slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID}"
+        f".{slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID}.selected_option.value",
+        body,
+    )
+    logger.info(f"Selected account: {account_id}")
+
+    valid_ps_names = statement.get_permission_sets_for_account(cfg.statements, account_id)
+    logger.info(f"Valid permission sets for account: {valid_ps_names}")
+
+    if not valid_ps_names:
+        view_id = body["view"]["id"]
+        view = slack_helpers.RequestForAccessView.build()
+        blocks = slack_helpers.remove_blocks(
+            body["view"]["blocks"],
+            block_ids=[
+                slack_helpers.RequestForAccessView.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+                slack_helpers.RequestForAccessView.PERMISSION_SET_BLOCK_ID,
+            ],
+        )
+        blocks = slack_helpers.insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[slack_helpers.RequestForAccessView.build_no_permission_sets_block()],
+            after_block_id=slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return client.views_update(view_id=view_id, view=view)
+
+    if "*" in valid_ps_names:
+        permission_sets = sso.get_permission_sets_from_config_with_cache(sso_client=sso_client, s3_client=s3_client, cfg=cfg)
+    else:
+        all_ps = sso.get_permission_sets_from_config_with_cache(sso_client=sso_client, s3_client=s3_client, cfg=cfg)
+        permission_sets = [ps for ps in all_ps if ps.name in valid_ps_names]
+
+    view_id = body["view"]["id"]
+    updated_view = slack_helpers.RequestForAccessView.update_with_permission_sets(
+        view_blocks=body["view"]["blocks"],
+        permission_sets=permission_sets,
+    )
+    return client.views_update(view_id=view_id, view=updated_view)
