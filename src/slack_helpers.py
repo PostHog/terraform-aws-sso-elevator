@@ -68,6 +68,7 @@ class RequestForAccessView:
             type="modal",
             callback_id=cls.CALLBACK_ID,
             submit=PlainTextObject(text="Request"),
+            submit_disabled=True,
             close=PlainTextObject(text="Cancel"),
             title=PlainTextObject(text="Request AWS Access"),
             blocks=[
@@ -90,16 +91,16 @@ class RequestForAccessView:
                         multiline=True,
                     ),
                 ),
-                DividerBlock(),
-                SectionBlock(
-                    text=MarkdownTextObject(
-                        text="All AWS API calls are logged for security compliance.",
-                    ),
-                ),
                 SectionBlock(
                     block_id=cls.LOADING_BLOCK_ID,
                     text=MarkdownTextObject(
                         text=":hourglass: Loading available accounts and permission sets...",
+                    ),
+                ),
+                DividerBlock(),
+                SectionBlock(
+                    text=MarkdownTextObject(
+                        text="All AWS API calls are logged for security compliance.",
                     ),
                 ),
             ],
@@ -115,6 +116,7 @@ class RequestForAccessView:
         sorted_accounts = sorted(accounts, key=lambda account: account.name)
         return InputBlock(
             block_id=cls.ACCOUNT_BLOCK_ID,
+            dispatch_action=True,
             label=PlainTextObject(text="AWS Account"),
             element=StaticSelectElement(
                 action_id=cls.ACCOUNT_ACTION_ID,
@@ -142,6 +144,18 @@ class RequestForAccessView:
         )
 
     @classmethod
+    def build_permission_set_placeholder_block(cls) -> InputBlock:
+        return InputBlock(
+            block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+            label=PlainTextObject(text="Permission set"),
+            element=StaticSelectElement(
+                action_id=cls.PERMISSION_SET_ACTION_ID + "_placeholder",
+                placeholder=PlainTextObject(text="Select an account first"),
+                options=[Option(text=PlainTextObject(text="—"), value="_disabled")],
+            ),
+        )
+
+    @classmethod
     def update_with_accounts(cls, accounts: list[entities.aws.Account]) -> View:
         view = cls.build()
         view.blocks = remove_blocks(view.blocks, block_ids=[cls.LOADING_BLOCK_ID])
@@ -149,10 +163,7 @@ class RequestForAccessView:
             blocks=view.blocks,
             blocks_to_insert=[
                 cls.build_select_account_input_block(accounts),
-                SectionBlock(
-                    block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
-                    text=MarkdownTextObject(text="Select an account above to see available permission sets"),
-                ),
+                cls.build_permission_set_placeholder_block(),
             ],
             after_block_id=cls.REASON_BLOCK_ID,
         )
@@ -161,6 +172,7 @@ class RequestForAccessView:
     @classmethod
     def update_with_permission_sets(cls, view_blocks: list, permission_sets: list[entities.aws.PermissionSet]) -> View:
         view = cls.build()
+        view.submit_disabled = False
         # Start from the current blocks, remove placeholder
         blocks = remove_blocks(view_blocks, block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID])
         # Insert permission set dropdown after account dropdown
