@@ -672,7 +672,7 @@ class EarlyRevokeModal:
                 InputBlock(
                     block_id=cls.REASON_BLOCK_ID,
                     optional=True,
-                    label=PlainTextObject(text="Reason (optional)"),
+                    label=PlainTextObject(text="Reason"),
                     element=PlainTextInputElement(
                         action_id=cls.REASON_ACTION_ID,
                         placeholder=PlainTextObject(text="e.g. Task completed, no longer needed"),
