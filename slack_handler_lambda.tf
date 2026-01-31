@@ -95,6 +95,8 @@ module "slack_handler_alias" {
   version = "8.1.2"
   count   = var.slack_handler_provisioned_concurrent_executions > 0 ? 1 : 0
 
+  refresh_alias = true
+
   name             = "live"
   function_name    = module.access_requester_slack_handler.lambda_function_name
   function_version = module.access_requester_slack_handler.lambda_function_version
