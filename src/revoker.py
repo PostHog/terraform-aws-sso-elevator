@@ -402,7 +402,11 @@ def handle_account_assignment_deletion(  # noqa: PLR0913
     )
 
     if cfg.post_update_to_slack:
-        account = organizations.describe_account(org_client, account_assignment.account_id)
+        try:
+            account = organizations.describe_account(org_client, account_assignment.account_id)
+        except Exception:
+            logger.warning("Failed to describe account, using account ID as fallback", extra={"account_id": account_assignment.account_id})
+            account = entities.aws.Account(id=account_assignment.account_id, name=account_assignment.account_id)
         return slack_notify_user_on_revoke(
             cfg=cfg,
             account_assignment=account_assignment,
@@ -574,7 +578,11 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
     schedule.delete_schedule(scheduler_client, revoke_event.schedule_name)
 
     if cfg.post_update_to_slack:
-        account = organizations.describe_account(org_client, user_account_assignment.account_id)
+        try:
+            account = organizations.describe_account(org_client, user_account_assignment.account_id)
+        except Exception:
+            logger.warning("Failed to describe account, using account ID as fallback", extra={"account_id": user_account_assignment.account_id})
+            account = entities.aws.Account(id=user_account_assignment.account_id, name=user_account_assignment.account_id)
         slack_notify_user_on_revoke(
             cfg=cfg,
             account_assignment=user_account_assignment,
@@ -667,7 +675,11 @@ def handle_check_on_inconsistency(  # noqa: PLR0913
 
     for account_assignment in account_assignments:
         if account_assignment not in account_assignments_from_events:
-            account = organizations.describe_account(org_client, account_assignment.account_id)
+            try:
+                account = organizations.describe_account(org_client, account_assignment.account_id)
+            except Exception:
+                logger.warning("Failed to describe account, using account ID as fallback", extra={"account_id": account_assignment.account_id})
+                account = entities.aws.Account(id=account_assignment.account_id, name=account_assignment.account_id)
             logger.warning("Found an inconsistent account assignment", extra={"account_assignment": account_assignment})
             mention = slack_helpers.create_slack_mention_by_principal_id(
                 sso_user_id=(

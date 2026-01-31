@@ -358,7 +358,11 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
     )
     logger.info("Decision on request was made", extra={"decision": decision.dict()})
 
-    account = organizations.describe_account(org_client, request.account_id)
+    try:
+        account = organizations.describe_account(org_client, request.account_id)
+    except Exception:
+        logger.warning("Failed to describe account, using account ID as fallback", extra={"account_id": request.account_id})
+        account = entities.aws.Account(id=request.account_id, name=request.account_id)
 
     show_buttons = bool(decision.approvers)
     slack_response = client.chat_postMessage(
