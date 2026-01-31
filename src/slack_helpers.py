@@ -69,11 +69,11 @@ class RequestForAccessView:
             callback_id=cls.CALLBACK_ID,
             submit=PlainTextObject(text="Request"),
             close=PlainTextObject(text="Cancel"),
-            title=PlainTextObject(text="Request AWS access"),
+            title=PlainTextObject(text="Request AWS Access"),
             blocks=[
                 SectionBlock(
                     block_id=cls.DURATION_BLOCK_ID,
-                    text=MarkdownTextObject(text="Access duration"),
+                    text=MarkdownTextObject(text="How long do you need access?"),
                     accessory=StaticSelectElement(
                         action_id=cls.DURATION_ACTION_ID,
                         initial_option=get_max_duration_block(cfg)[0],
@@ -83,7 +83,7 @@ class RequestForAccessView:
                 ),
                 InputBlock(
                     block_id=cls.REASON_BLOCK_ID,
-                    label=PlainTextObject(text="Reason"),
+                    label=PlainTextObject(text="Reason for access"),
                     element=PlainTextInputElement(
                         action_id=cls.REASON_ACTION_ID,
                         placeholder=PlainTextObject(text="What will this access be used for?"),
@@ -93,7 +93,7 @@ class RequestForAccessView:
                 DividerBlock(),
                 SectionBlock(
                     text=MarkdownTextObject(
-                        text="Remember to use your access responsibly. All AWS actions are logged.",
+                        text="All AWS API calls are logged for security compliance.",
                     ),
                 ),
                 SectionBlock(
@@ -115,7 +115,7 @@ class RequestForAccessView:
         sorted_accounts = sorted(accounts, key=lambda account: account.name)
         return InputBlock(
             block_id=cls.ACCOUNT_BLOCK_ID,
-            label=PlainTextObject(text="Account"),
+            label=PlainTextObject(text="AWS Account"),
             element=StaticSelectElement(
                 action_id=cls.ACCOUNT_ACTION_ID,
                 placeholder=PlainTextObject(text="Select account"),
@@ -151,7 +151,7 @@ class RequestForAccessView:
                 cls.build_select_account_input_block(accounts),
                 SectionBlock(
                     block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
-                    text=MarkdownTextObject(text=":point_up: Select an account to see available permission sets"),
+                    text=MarkdownTextObject(text="Select an account above to see available permission sets"),
                 ),
             ],
             after_block_id=cls.REASON_BLOCK_ID,
@@ -176,8 +176,25 @@ class RequestForAccessView:
     def build_no_permission_sets_block(cls) -> SectionBlock:
         return SectionBlock(
             block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
-            text=MarkdownTextObject(text=":warning: No permission sets available for this account"),
+            text=MarkdownTextObject(text=":x: No permission sets configured for this account. Contact your admin."),
         )
+
+    @classmethod
+    def build_no_permission_sets_view(cls, view_blocks: list) -> View:
+        """Build view with warning and disabled submit button."""
+        view = cls.build()
+        view.submit_disabled = True
+        blocks = remove_blocks(
+            view_blocks,
+            block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID],
+        )
+        blocks = insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[cls.build_no_permission_sets_block()],
+            after_block_id=cls.ACCOUNT_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return view
 
     @classmethod
     def parse(cls, obj: dict) -> RequestForAccess:
@@ -542,13 +559,11 @@ class RequestForGroupAccessView:
             callback_id=cls.CALLBACK_ID,
             submit=PlainTextObject(text="Request"),
             close=PlainTextObject(text="Cancel"),
-            title=PlainTextObject(text="Request AWS access"),
+            title=PlainTextObject(text="Request Group Access"),
             blocks=[
-                SectionBlock(text=MarkdownTextObject(text=":wave: Hey! Please fill form below to request access to AWS SSO group.")),
-                DividerBlock(),
                 SectionBlock(
                     block_id=cls.DURATION_BLOCK_ID,
-                    text=MarkdownTextObject(text="Select the duration for which the access will be provided"),
+                    text=MarkdownTextObject(text="How long do you need access?"),
                     accessory=StaticSelectElement(
                         action_id=cls.DURATION_ACTION_ID,
                         initial_option=get_max_duration_block(cfg)[0],
@@ -558,23 +573,23 @@ class RequestForGroupAccessView:
                 ),
                 InputBlock(
                     block_id=cls.REASON_BLOCK_ID,
-                    label=PlainTextObject(text="Why do you need access?"),
+                    label=PlainTextObject(text="Reason for access"),
                     element=PlainTextInputElement(
                         action_id=cls.REASON_ACTION_ID,
-                        placeholder=PlainTextObject(text="Reason will be saved in audit logs. Please be specific."),
+                        placeholder=PlainTextObject(text="What will this access be used for?"),
                         multiline=True,
                     ),
                 ),
                 DividerBlock(),
                 SectionBlock(
                     text=MarkdownTextObject(
-                        text="Remember to use access responsibly. All actions (AWS API calls) are being recorded.",
+                        text="All AWS API calls are logged for security compliance.",
                     ),
                 ),
                 SectionBlock(
                     block_id=cls.LOADING_BLOCK_ID,
                     text=MarkdownTextObject(
-                        text=":hourglass: Loading available accounts and permission sets...",
+                        text=":hourglass: Loading available groups...",
                     ),
                 ),
             ],
@@ -603,7 +618,7 @@ class RequestForGroupAccessView:
         sorted_groups = sorted(groups, key=lambda groups: groups.name)
         return InputBlock(
             block_id=cls.GROUP_BLOCK_ID,
-            label=PlainTextObject(text="Select group"),
+            label=PlainTextObject(text="SSO Group"),
             element=StaticSelectElement(
                 action_id=cls.GROUP_ACTION_ID,
                 placeholder=PlainTextObject(text="Select group"),
