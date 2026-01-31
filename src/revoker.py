@@ -188,6 +188,10 @@ def handle_early_account_revocation(  # noqa: PLR0913
     )
 
     # 4. Update header and post confirmation to thread
+    logger.info(
+        "Posting early revoke Slack updates",
+        extra={"post_update_to_slack": cfg.post_update_to_slack, "thread_ts": thread_ts, "schedule_name": schedule_name},
+    )
     if cfg.post_update_to_slack and thread_ts:
         # Update the original message header to ACCESS ENDED
         message = slack_helpers.get_message_from_timestamp(
@@ -216,21 +220,31 @@ def handle_early_account_revocation(  # noqa: PLR0913
             thread_ts=thread_ts,
         )
     elif cfg.post_update_to_slack:
-        # Full message when not in a thread
-        account = organizations.describe_account(org_client, user_account_assignment.account_id)
-        mention = slack_helpers.create_slack_mention_by_principal_id(
-            sso_user_id=user_account_assignment.user_principal_id,
-            sso_client=sso_client,
-            cfg=cfg,
-            identitystore_client=identitystore_client,
-            slack_client=slack_client,
-        )
-        reason_text = f" Reason: {reason}" if reason else ""
-        text = f"<@{revoker_slack_id}> ended the session early for {mention} (role {permission_set.name} in {account.name}).{reason_text}"
-        return slack_client.chat_postMessage(
-            channel=cfg.slack_channel_id,
-            text=text,
-        )
+        # Full message when not in a thread (fallback)
+        logger.info("No thread_ts available, posting to channel instead")
+        try:
+            account = organizations.describe_account(org_client, user_account_assignment.account_id)
+            mention = slack_helpers.create_slack_mention_by_principal_id(
+                sso_user_id=user_account_assignment.user_principal_id,
+                sso_client=sso_client,
+                cfg=cfg,
+                identitystore_client=identitystore_client,
+                slack_client=slack_client,
+            )
+            reason_text = f" Reason: {reason}" if reason else ""
+            text = f"<@{revoker_slack_id}> ended the session early for {mention} (role {permission_set.name} in {account.name}).{reason_text}"
+            return slack_client.chat_postMessage(
+                channel=cfg.slack_channel_id,
+                text=text,
+            )
+        except Exception as e:
+            logger.error("Failed to post early revoke message to channel", extra={"error": str(e)})
+            return slack_client.chat_postMessage(
+                channel=cfg.slack_channel_id,
+                text=f"<@{revoker_slack_id}> ended a session early.",
+            )
+    else:
+        logger.info("Slack updates disabled (post_update_to_slack=False)")
 
 
 def handle_early_group_revocation(  # noqa: PLR0913
@@ -291,6 +305,10 @@ def handle_early_group_revocation(  # noqa: PLR0913
     )
 
     # 4. Update header and post confirmation to thread
+    logger.info(
+        "Posting early revoke Slack updates",
+        extra={"post_update_to_slack": cfg.post_update_to_slack, "thread_ts": thread_ts, "schedule_name": schedule_name},
+    )
     if cfg.post_update_to_slack and thread_ts:
         # Update the original message header to ACCESS ENDED
         message = slack_helpers.get_message_from_timestamp(
@@ -319,20 +337,30 @@ def handle_early_group_revocation(  # noqa: PLR0913
             thread_ts=thread_ts,
         )
     elif cfg.post_update_to_slack:
-        # Full message when not in a thread
-        mention = slack_helpers.create_slack_mention_by_principal_id(
-            sso_user_id=group_assignment.user_principal_id,
-            sso_client=sso_client,
-            cfg=cfg,
-            identitystore_client=identitystore_client,
-            slack_client=slack_client,
-        )
-        reason_text = f" Reason: {reason}" if reason else ""
-        text = f"<@{revoker_slack_id}> ended the session early for {mention} (group {group_assignment.group_name}).{reason_text}"
-        return slack_client.chat_postMessage(
-            channel=cfg.slack_channel_id,
-            text=text,
-        )
+        # Full message when not in a thread (fallback)
+        logger.info("No thread_ts available, posting to channel instead")
+        try:
+            mention = slack_helpers.create_slack_mention_by_principal_id(
+                sso_user_id=group_assignment.user_principal_id,
+                sso_client=sso_client,
+                cfg=cfg,
+                identitystore_client=identitystore_client,
+                slack_client=slack_client,
+            )
+            reason_text = f" Reason: {reason}" if reason else ""
+            text = f"<@{revoker_slack_id}> ended the session early for {mention} (group {group_assignment.group_name}).{reason_text}"
+            return slack_client.chat_postMessage(
+                channel=cfg.slack_channel_id,
+                text=text,
+            )
+        except Exception as e:
+            logger.error("Failed to post early revoke message to channel", extra={"error": str(e)})
+            return slack_client.chat_postMessage(
+                channel=cfg.slack_channel_id,
+                text=f"<@{revoker_slack_id}> ended a session early.",
+            )
+    else:
+        logger.info("Slack updates disabled (post_update_to_slack=False)")
 
 
 def handle_account_assignment_deletion(  # noqa: PLR0913
