@@ -505,6 +505,20 @@ def get_message_from_timestamp(channel_id: str, message_ts: str, slack_client: s
     return None
 
 
+def delete_early_revoke_button(client: WebClient, channel_id: str, thread_ts: str) -> bool:
+    """Find and delete the early revoke button message in a thread."""
+    try:
+        result = client.conversations_replies(channel=channel_id, ts=thread_ts)
+        for msg in result.get("messages", []):
+            blocks = msg.get("blocks", [])
+            if any(b.get("block_id") == "early_revoke_button" for b in blocks):
+                client.chat_delete(channel=channel_id, ts=msg["ts"])
+                return True
+    except slack_sdk.errors.SlackApiError as e:
+        logger.warning(f"Failed to delete early revoke button: {e}")
+    return False
+
+
 # Plain text object supports only 99 options
 # https://github.com/fivexl/terraform-aws-sso-elevator/issues/110
 def get_max_duration_block(cfg: config.Config) -> list[Option]:

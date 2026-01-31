@@ -209,6 +209,7 @@ def handle_early_account_revocation(  # noqa: PLR0913
 
         reason_text = f" Reason: {reason}" if reason else ""
         text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
+        slack_helpers.delete_early_revoke_button(slack_client, cfg.slack_channel_id, thread_ts)
         return slack_client.chat_postMessage(
             channel=cfg.slack_channel_id,
             text=text,
@@ -311,6 +312,7 @@ def handle_early_group_revocation(  # noqa: PLR0913
 
         reason_text = f" Reason: {reason}" if reason else ""
         text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
+        slack_helpers.delete_early_revoke_button(slack_client, cfg.slack_channel_id, thread_ts)
         return slack_client.chat_postMessage(
             channel=cfg.slack_channel_id,
             text=text,
@@ -412,6 +414,8 @@ def slack_notify_user_on_revoke(  # noqa: PLR0913
                 blocks=blocks,
                 text="Access ended",
             )
+        # Delete the early revoke button from the thread
+        slack_helpers.delete_early_revoke_button(slack_client, cfg.slack_channel_id, thread_ts)
         # Simplified message for threads (context already in thread)
         text = "Access revoked."
     else:
@@ -461,6 +465,8 @@ def slack_notify_user_on_group_access_revoke(  # noqa: PLR0913
                 blocks=blocks,
                 text="Access ended",
             )
+        # Delete the early revoke button from the thread
+        slack_helpers.delete_early_revoke_button(slack_client, cfg.slack_channel_id, thread_ts)
         # Simplified message for threads (context already in thread)
         text = "Access revoked."
     else:
