@@ -91,16 +91,16 @@ class RequestForAccessView:
                         multiline=True,
                     ),
                 ),
-                DividerBlock(),
-                SectionBlock(
-                    text=MarkdownTextObject(
-                        text="All AWS API calls are logged for security compliance.",
-                    ),
-                ),
                 SectionBlock(
                     block_id=cls.LOADING_BLOCK_ID,
                     text=MarkdownTextObject(
                         text=":hourglass: Loading available accounts and permission sets...",
+                    ),
+                ),
+                DividerBlock(),
+                SectionBlock(
+                    text=MarkdownTextObject(
+                        text="All AWS API calls are logged for security compliance.",
                     ),
                 ),
             ],
