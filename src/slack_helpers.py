@@ -286,9 +286,9 @@ def build_approval_request_message_blocks(  # noqa: PLR0913
     show_buttons: bool = True,
 ) -> list[Block]:
     fields = [
-        MarkdownTextObject(text=f"Requester: <@{requester_slack_id}>"),
-        MarkdownTextObject(text=f"Reason: {reason}"),
-        MarkdownTextObject(text=f"Permission duration: {humanize_timedelta(permission_duration)}"),
+        MarkdownTextObject(text=f"*Requester*\n<@{requester_slack_id}>"),
+        MarkdownTextObject(text=f"*Reason*\n{reason}"),
+        MarkdownTextObject(text=f"*Duration*\n{humanize_timedelta(permission_duration)}"),
     ]
     _, secondary_domain_was_used = sso.get_user_principal_id_by_email(
         identity_store_client=identity_store_client,
@@ -310,10 +310,10 @@ def build_approval_request_message_blocks(  # noqa: PLR0913
             )
         )
     if group:
-        fields.insert(1, MarkdownTextObject(text=f"Group: {group.name} #{group.id}"))
+        fields.insert(1, MarkdownTextObject(text=f"*Group*\n{group.name} ({group.id})"))
     elif account and role_name:
-        fields.insert(1, MarkdownTextObject(text=f"Account: {account.name} #{account.id}"))
-        fields.insert(2, MarkdownTextObject(text=f"Role name: {role_name}"))
+        fields.insert(1, MarkdownTextObject(text=f"*Account*\n{account.name} ({account.id})"))
+        fields.insert(2, MarkdownTextObject(text=f"*Permission Set*\n{role_name}"))
 
     blocks: list[Block] = [
         HeaderSectionBlock.new(color_coding_emoji),
@@ -348,7 +348,7 @@ class HeaderSectionBlock:
     @classmethod
     def new(cls, color_coding_emoji: str) -> SectionBlock:
         return SectionBlock(
-            block_id=cls.block_id, text=MarkdownTextObject(text=f"{color_coding_emoji} | AWS account access request | {color_coding_emoji}")
+            block_id=cls.block_id, text=MarkdownTextObject(text=f"{color_coding_emoji}  Access Request")
         )
 
     @staticmethod
