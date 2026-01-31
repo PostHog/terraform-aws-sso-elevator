@@ -187,27 +187,48 @@ def handle_early_account_revocation(  # noqa: PLR0913
         ),
     )
 
-    # 4. Post confirmation to thread
-    if cfg.post_update_to_slack:
-        reason_text = f" Reason: {reason}" if reason else ""
-        if thread_ts:
-            # Simplified message for threads (context already in thread)
-            text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
-        else:
-            # Full message when not in a thread
-            account = organizations.describe_account(org_client, user_account_assignment.account_id)
-            mention = slack_helpers.create_slack_mention_by_principal_id(
-                sso_user_id=user_account_assignment.user_principal_id,
-                sso_client=sso_client,
-                cfg=cfg,
-                identitystore_client=identitystore_client,
-                slack_client=slack_client,
+    # 4. Update header and post confirmation to thread
+    if cfg.post_update_to_slack and thread_ts:
+        # Update the original message header to ACCESS ENDED
+        message = slack_helpers.get_message_from_timestamp(
+            channel_id=cfg.slack_channel_id,
+            message_ts=thread_ts,
+            slack_client=slack_client,
+        )
+        if message:
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
+                blocks=message["blocks"],
+                status_text=cfg.access_ended_status,
             )
-            text = f"<@{revoker_slack_id}> ended the session early for {mention} (role {permission_set.name} in {account.name}).{reason_text}"
+            slack_client.chat_update(
+                channel=cfg.slack_channel_id,
+                ts=thread_ts,
+                blocks=blocks,
+                text="Access ended",
+            )
+
+        reason_text = f" Reason: {reason}" if reason else ""
+        text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
         return slack_client.chat_postMessage(
             channel=cfg.slack_channel_id,
             text=text,
             thread_ts=thread_ts,
+        )
+    elif cfg.post_update_to_slack:
+        # Full message when not in a thread
+        account = organizations.describe_account(org_client, user_account_assignment.account_id)
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=user_account_assignment.user_principal_id,
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identitystore_client,
+            slack_client=slack_client,
+        )
+        reason_text = f" Reason: {reason}" if reason else ""
+        text = f"<@{revoker_slack_id}> ended the session early for {mention} (role {permission_set.name} in {account.name}).{reason_text}"
+        return slack_client.chat_postMessage(
+            channel=cfg.slack_channel_id,
+            text=text,
         )
 
 
@@ -268,26 +289,47 @@ def handle_early_group_revocation(  # noqa: PLR0913
         ),
     )
 
-    # 4. Post confirmation to thread
-    if cfg.post_update_to_slack:
-        reason_text = f" Reason: {reason}" if reason else ""
-        if thread_ts:
-            # Simplified message for threads (context already in thread)
-            text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
-        else:
-            # Full message when not in a thread
-            mention = slack_helpers.create_slack_mention_by_principal_id(
-                sso_user_id=group_assignment.user_principal_id,
-                sso_client=sso_client,
-                cfg=cfg,
-                identitystore_client=identitystore_client,
-                slack_client=slack_client,
+    # 4. Update header and post confirmation to thread
+    if cfg.post_update_to_slack and thread_ts:
+        # Update the original message header to ACCESS ENDED
+        message = slack_helpers.get_message_from_timestamp(
+            channel_id=cfg.slack_channel_id,
+            message_ts=thread_ts,
+            slack_client=slack_client,
+        )
+        if message:
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
+                blocks=message["blocks"],
+                status_text=cfg.access_ended_status,
             )
-            text = f"<@{revoker_slack_id}> ended the session early for {mention} (group {group_assignment.group_name}).{reason_text}"
+            slack_client.chat_update(
+                channel=cfg.slack_channel_id,
+                ts=thread_ts,
+                blocks=blocks,
+                text="Access ended",
+            )
+
+        reason_text = f" Reason: {reason}" if reason else ""
+        text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
         return slack_client.chat_postMessage(
             channel=cfg.slack_channel_id,
             text=text,
             thread_ts=thread_ts,
+        )
+    elif cfg.post_update_to_slack:
+        # Full message when not in a thread
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=group_assignment.user_principal_id,
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identitystore_client,
+            slack_client=slack_client,
+        )
+        reason_text = f" Reason: {reason}" if reason else ""
+        text = f"<@{revoker_slack_id}> ended the session early for {mention} (group {group_assignment.group_name}).{reason_text}"
+        return slack_client.chat_postMessage(
+            channel=cfg.slack_channel_id,
+            text=text,
         )
 
 
@@ -353,6 +395,23 @@ def slack_notify_user_on_revoke(  # noqa: PLR0913
     thread_ts: str | None = None,
 ) -> SlackResponse:
     if thread_ts:
+        # Update the original message header to ACCESS ENDED
+        message = slack_helpers.get_message_from_timestamp(
+            channel_id=cfg.slack_channel_id,
+            message_ts=thread_ts,
+            slack_client=slack_client,
+        )
+        if message:
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
+                blocks=message["blocks"],
+                status_text=cfg.access_ended_status,
+            )
+            slack_client.chat_update(
+                channel=cfg.slack_channel_id,
+                ts=thread_ts,
+                blocks=blocks,
+                text="Access ended",
+            )
         # Simplified message for threads (context already in thread)
         text = "Access revoked."
     else:
@@ -385,6 +444,23 @@ def slack_notify_user_on_group_access_revoke(  # noqa: PLR0913
     thread_ts: str | None = None,
 ) -> SlackResponse:
     if thread_ts:
+        # Update the original message header to ACCESS ENDED
+        message = slack_helpers.get_message_from_timestamp(
+            channel_id=cfg.slack_channel_id,
+            message_ts=thread_ts,
+            slack_client=slack_client,
+        )
+        if message:
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
+                blocks=message["blocks"],
+                status_text=cfg.access_ended_status,
+            )
+            slack_client.chat_update(
+                channel=cfg.slack_channel_id,
+                ts=thread_ts,
+                blocks=blocks,
+                text="Access ended",
+            )
         # Simplified message for threads (context already in thread)
         text = "Access revoked."
     else:
@@ -769,9 +845,9 @@ def handle_discard_buttons_event(
                     ),
                 )
             )
-            blocks = slack_helpers.HeaderSectionBlock.set_color_coding(
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
                 blocks=blocks,
-                color_coding_emoji=cfg.discarded_result_emoji,
+                status_text=cfg.timed_out_status,
             )
 
             slack_client.chat_update(

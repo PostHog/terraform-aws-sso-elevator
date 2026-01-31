@@ -279,7 +279,7 @@ def build_approval_request_message_blocks(  # noqa: PLR0913
     identity_store_client: IdentityStoreClient,
     permission_duration: timedelta,
     reason: str,
-    color_coding_emoji: str,
+    status_text: str,
     account: Optional[entities.aws.Account] = None,
     group: Optional[entities.aws.SSOGroup] = None,
     role_name: Optional[str] = None,
@@ -287,9 +287,17 @@ def build_approval_request_message_blocks(  # noqa: PLR0913
 ) -> list[Block]:
     fields = [
         MarkdownTextObject(text=f"*Requester*\n<@{requester_slack_id}>"),
-        MarkdownTextObject(text=f"*Reason*\n{reason}"),
-        MarkdownTextObject(text=f"*Duration*\n{humanize_timedelta(permission_duration)}"),
     ]
+
+    if group:
+        fields.append(MarkdownTextObject(text=f"*Group*\n{group.name} ({group.id})"))
+    elif account and role_name:
+        fields.append(MarkdownTextObject(text=f"*Account*\n{account.name} ({account.id})"))
+        fields.append(MarkdownTextObject(text=f"*Permission Set*\n{role_name}"))
+
+    fields.append(MarkdownTextObject(text=f"*Duration*\n{humanize_timedelta(permission_duration)}"))
+    fields.append(MarkdownTextObject(text=f"*Reason*\n{reason}"))
+
     _, secondary_domain_was_used = sso.get_user_principal_id_by_email(
         identity_store_client=identity_store_client,
         identity_store_id=sso.describe_sso_instance(sso_client, cfg.sso_instance_arn).identity_store_id,
@@ -309,14 +317,9 @@ def build_approval_request_message_blocks(  # noqa: PLR0913
                 )
             )
         )
-    if group:
-        fields.insert(1, MarkdownTextObject(text=f"*Group*\n{group.name} ({group.id})"))
-    elif account and role_name:
-        fields.insert(1, MarkdownTextObject(text=f"*Account*\n{account.name} ({account.id})"))
-        fields.insert(2, MarkdownTextObject(text=f"*Permission Set*\n{role_name}"))
 
     blocks: list[Block] = [
-        HeaderSectionBlock.new(color_coding_emoji),
+        HeaderSectionBlock.new(status_text),
         SectionBlock(block_id="content", fields=fields),
     ]
     if show_buttons:
@@ -346,15 +349,15 @@ class HeaderSectionBlock:
     block_id = "header"
 
     @classmethod
-    def new(cls, color_coding_emoji: str) -> SectionBlock:
+    def new(cls, status_text: str) -> SectionBlock:
         return SectionBlock(
-            block_id=cls.block_id, text=MarkdownTextObject(text=f"{color_coding_emoji}  Access Request")
+            block_id=cls.block_id, text=MarkdownTextObject(text=status_text)
         )
 
     @staticmethod
-    def set_color_coding(blocks: list[dict], color_coding_emoji: str) -> list[dict]:
+    def set_status(blocks: list[dict], status_text: str) -> list[dict]:
         blocks = remove_blocks(blocks, block_ids=[HeaderSectionBlock.block_id])
-        b = HeaderSectionBlock.new(color_coding_emoji)
+        b = HeaderSectionBlock.new(status_text)
         blocks.insert(0, b.to_dict())
         return blocks
 

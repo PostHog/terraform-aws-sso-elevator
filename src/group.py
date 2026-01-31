@@ -59,7 +59,7 @@ def handle_request_for_group_access_submittion(
             reason=request.reason,
             permission_duration=request.permission_duration,
             show_buttons=show_buttons,
-            color_coding_emoji=cfg.waiting_result_emoji,
+            status_text=cfg.pending_status,
         ),
         channel=cfg.slack_channel_id,
         text=f"Request for access to {group.name} group from {requester.real_name}",
@@ -86,25 +86,25 @@ def handle_request_for_group_access_submittion(
         case access_control.DecisionReason.ApprovalNotRequired:
             text = "Approval for this Group is not required. Request will be approved automatically."
             dm_text = "Approval for this Group is not required. Your request will be approved automatically."
-            color_coding_emoji = cfg.good_result_emoji
+            status_text = cfg.granted_status
         case access_control.DecisionReason.SelfApproval:
             text = "Self approval is allowed and requester is an approver. Request will be approved automatically."
             dm_text = "Self approval is allowed and you are an approver. Your request will be approved automatically."
-            color_coding_emoji = cfg.good_result_emoji
+            status_text = cfg.granted_status
         case access_control.DecisionReason.RequiresApproval:
             approvers = [slack_helpers.get_user_by_email(client, email) for email in decision.approvers]
             mention_approvers = " ".join(f"<@{approver.id}>" for approver in approvers)
             text = f"{mention_approvers} there is a request waiting for the approval."
             dm_text = f"Your request is waiting for the approval from {mention_approvers}."
-            color_coding_emoji = cfg.waiting_result_emoji
+            status_text = cfg.pending_status
         case access_control.DecisionReason.NoApprovers:
             text = "Nobody can approve this request."
             dm_text = "Nobody can approve this request."
-            color_coding_emoji = cfg.bad_result_emoji
+            status_text = cfg.denied_status
         case access_control.DecisionReason.NoStatements:
             text = "There are no statements for this Group."
             dm_text = "There are no statements for this Group."
-            color_coding_emoji = cfg.bad_result_emoji
+            status_text = cfg.denied_status
 
     is_user_in_channel = slack_helpers.check_if_user_is_in_channel(client, cfg.slack_channel_id, requester.id)
 
@@ -119,9 +119,9 @@ def handle_request_for_group_access_submittion(
             """,
         )
 
-    blocks = slack_helpers.HeaderSectionBlock.set_color_coding(
+    blocks = slack_helpers.HeaderSectionBlock.set_status(
         blocks=slack_response["message"]["blocks"],
-        color_coding_emoji=color_coding_emoji,
+        status_text=status_text,
     )
     client.chat_update(
         channel=cfg.slack_channel_id,
@@ -199,9 +199,9 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
     cache_for_dublicate_requests["group_id"] = payload.request.group_id
 
     if payload.action == entities.ApproverAction.Discard:
-        blocks = slack_helpers.HeaderSectionBlock.set_color_coding(
+        blocks = slack_helpers.HeaderSectionBlock.set_status(
             blocks=payload.message["blocks"],
-            color_coding_emoji=cfg.bad_result_emoji,
+            status_text=cfg.denied_status,
         )
 
         blocks = slack_helpers.remove_blocks(blocks, block_ids=["buttons"])
@@ -246,9 +246,9 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
 
     text = f"Permissions granted to <@{requester.id}> by <@{approver.id}>."
     dm_text = f"Your request was approved by <@{approver.id}>. Permissions granted."
-    blocks = slack_helpers.HeaderSectionBlock.set_color_coding(
+    blocks = slack_helpers.HeaderSectionBlock.set_status(
         blocks=payload.message["blocks"],
-        color_coding_emoji=cfg.good_result_emoji,
+        status_text=cfg.granted_status,
     )
 
     blocks = slack_helpers.remove_blocks(blocks, block_ids=["buttons"])
