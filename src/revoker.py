@@ -416,10 +416,29 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
     logger.info("Handling scheduled account assignment deletion", extra={"revoke_event": revoke_event})
 
     user_account_assignment = revoke_event.user_account_assignment
-    assignment_status = sso.delete_account_assignment_and_wait_for_result(
-        sso_client,
-        user_account_assignment,
-    )
+
+    # Handle idempotency: assignment may have already been deleted by early revoke
+    try:
+        assignment_status = sso.delete_account_assignment_and_wait_for_result(
+            sso_client,
+            user_account_assignment,
+        )
+    except Exception as e:
+        error_code = getattr(getattr(e, "response", {}), "get", lambda *_: None)("Error", {}).get("Code")
+        # Check for botocore ClientError
+        if hasattr(e, "response"):
+            import jmespath as jp
+
+            error_code = jp.search("Error.Code", e.response)
+        if error_code == "ConflictException":
+            logger.warning(
+                "Account assignment already deleted (likely by early revoke), skipping",
+                extra={"revoke_event": revoke_event},
+            )
+            schedule.delete_schedule(scheduler_client, revoke_event.schedule_name)
+            return None
+        raise
+
     permission_set = sso.describe_permission_set(
         sso_client,
         sso_instance_arn=user_account_assignment.instance_arn,
@@ -468,7 +487,25 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
 ) -> SlackResponse | None:
     logger.info("Handling scheduled group access revokation", extra={"revoke_event": group_revoke_event})
     group_assignment = group_revoke_event.group_assignment
-    sso.remove_user_from_group(group_assignment.identity_store_id, group_assignment.membership_id, identitystore_client)
+
+    # Handle idempotency: membership may have already been deleted by early revoke
+    try:
+        sso.remove_user_from_group(group_assignment.identity_store_id, group_assignment.membership_id, identitystore_client)
+    except Exception as e:
+        error_code = None
+        if hasattr(e, "response"):
+            import jmespath as jp
+
+            error_code = jp.search("Error.Code", e.response)
+        if error_code == "ResourceNotFoundException":
+            logger.warning(
+                "Group membership already deleted (likely by early revoke), skipping",
+                extra={"group_revoke_event": group_revoke_event},
+            )
+            schedule.delete_schedule(scheduler_client, group_revoke_event.schedule_name)
+            return None
+        raise
+
     s3.log_operation(
         audit_entry=s3.AuditEntry(
             group_name=group_assignment.group_name,
