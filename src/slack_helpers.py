@@ -144,6 +144,18 @@ class RequestForAccessView:
         )
 
     @classmethod
+    def build_permission_set_placeholder_block(cls) -> InputBlock:
+        return InputBlock(
+            block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+            label=PlainTextObject(text="Permission set"),
+            element=StaticSelectElement(
+                action_id=cls.PERMISSION_SET_ACTION_ID + "_placeholder",
+                placeholder=PlainTextObject(text="Select an account first"),
+                options=[Option(text=PlainTextObject(text="—"), value="_disabled")],
+            ),
+        )
+
+    @classmethod
     def update_with_accounts(cls, accounts: list[entities.aws.Account]) -> View:
         view = cls.build()
         view.blocks = remove_blocks(view.blocks, block_ids=[cls.LOADING_BLOCK_ID])
@@ -151,10 +163,7 @@ class RequestForAccessView:
             blocks=view.blocks,
             blocks_to_insert=[
                 cls.build_select_account_input_block(accounts),
-                SectionBlock(
-                    block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
-                    text=MarkdownTextObject(text="Select an account above to see available permission sets"),
-                ),
+                cls.build_permission_set_placeholder_block(),
             ],
             after_block_id=cls.REASON_BLOCK_ID,
         )
