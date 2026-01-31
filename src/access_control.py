@@ -160,6 +160,7 @@ def execute_decision(  # noqa: PLR0913
     approver: entities.slack.User,
     requester: entities.slack.User,
     reason: str,
+    thread_ts: str | None = None,
 ) -> bool:
     logger.info("Executing decision")
     if not decision.grant:
@@ -215,6 +216,7 @@ def execute_decision(  # noqa: PLR0913
             permission_set_arn=permission_set.arn,
             user_principal_id=sso_user_principal_id,
         ),
+        thread_ts=thread_ts,
     )
     return True  # Temporary solution for testing
 
@@ -227,6 +229,7 @@ def execute_decision_on_group_request(  # noqa: PLR0913
     requester: entities.slack.User,
     reason: str,
     identity_store_id: str,
+    thread_ts: str | None = None,
 ) -> bool:
     logger.info("Executing decision")
     if not decision.grant:
@@ -284,5 +287,6 @@ def execute_decision_on_group_request(  # noqa: PLR0913
             user_principal_id=sso_user_principal_id,
             membership_id=membership_id,
         ),
+        thread_ts=thread_ts,
     )
     return  # type: ignore # noqa: PGH003

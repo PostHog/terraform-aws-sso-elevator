@@ -182,6 +182,7 @@ def slack_notify_user_on_revoke(  # noqa: PLR0913
     sso_client: SSOAdminClient,
     identitystore_client: IdentityStoreClient,
     slack_client: slack_sdk.WebClient,
+    thread_ts: str | None = None,
 ) -> SlackResponse:
     mention = slack_helpers.create_slack_mention_by_principal_id(
         sso_user_id=(
@@ -197,6 +198,7 @@ def slack_notify_user_on_revoke(  # noqa: PLR0913
     return slack_client.chat_postMessage(
         channel=cfg.slack_channel_id,
         text=f"Revoked role {permission_set.name} for user {mention} in account {account.name}",
+        thread_ts=thread_ts,
     )
 
 
@@ -206,6 +208,7 @@ def slack_notify_user_on_group_access_revoke(  # noqa: PLR0913
     sso_client: SSOAdminClient,
     identitystore_client: IdentityStoreClient,
     slack_client: slack_sdk.WebClient,
+    thread_ts: str | None = None,
 ) -> SlackResponse:
     mention = slack_helpers.create_slack_mention_by_principal_id(
         sso_user_id=group_assignment.user_principal_id,
@@ -217,6 +220,7 @@ def slack_notify_user_on_group_access_revoke(  # noqa: PLR0913
     return slack_client.chat_postMessage(
         channel=cfg.slack_channel_id,
         text=f"User {mention} has been removed from the group {group_assignment.group_name}.",
+        thread_ts=thread_ts,
     )
 
 
@@ -270,6 +274,7 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
             sso_client=sso_client,
             identitystore_client=identitystore_client,
             slack_client=slack_client,
+            thread_ts=revoke_event.thread_ts,
         )
 
 
@@ -307,6 +312,7 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
             sso_client=sso_client,
             identitystore_client=identitystore_client,
             slack_client=slack_client,
+            thread_ts=group_revoke_event.thread_ts,
         )
 
 

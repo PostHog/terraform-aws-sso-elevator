@@ -1,6 +1,17 @@
 """Tests for model serialization, particularly handling frozensets with nested Pydantic models."""
 
+from datetime import timedelta
+
+import entities
+import sso
 from access_control import AccessRequestDecision, ApproveRequestDecision, DecisionReason
+from events import (
+    Event,
+    GroupRevokeEvent,
+    RevokeEvent,
+    ScheduledGroupRevokeEvent,
+    ScheduledRevokeEvent,
+)
 from statement import Statement, GroupStatement
 
 
@@ -174,3 +185,138 @@ class TestModelSerialization:
         assert isinstance(result["approvers"], list)
         assert result["allow_self_approval"] is False
         assert result["approval_is_not_required"] is True
+
+
+class TestRevokeEventSerialization:
+    """Test that RevokeEvent and GroupRevokeEvent serialize thread_ts correctly through EventBridge payload."""
+
+    def _sample_user(self):
+        return entities.slack.User(email="user@example.com", id="U123", real_name="Test User")
+
+    def _sample_user_account_assignment(self):
+        return sso.UserAccountAssignment(
+            instance_arn="arn:aws:sso:::instance/ssoins-123",
+            account_id="123456789012",
+            permission_set_arn="arn:aws:sso:::permissionSet/ssoins-123/ps-123",
+            user_principal_id="user-principal-123",
+        )
+
+    def _sample_group_assignment(self):
+        return sso.GroupAssignment(
+            identity_store_id="d-123456789",
+            group_name="TestGroup",
+            group_id="group-123",
+            user_principal_id="user-principal-123",
+            membership_id="membership-123",
+        )
+
+    def test_revoke_event_with_thread_ts_json_roundtrip(self):
+        """Test RevokeEvent preserves thread_ts through JSON serialization (EventBridge payload)."""
+        event = RevokeEvent(
+            schedule_name="test-schedule",
+            approver=self._sample_user(),
+            requester=self._sample_user(),
+            user_account_assignment=self._sample_user_account_assignment(),
+            permission_duration=timedelta(hours=1),
+            thread_ts="1234567890.123456",
+        )
+
+        # Serialize to JSON (mimics EventBridge payload)
+        json_str = event.json()
+
+        # Deserialize back
+        restored = RevokeEvent.model_validate_json(json_str)
+
+        assert restored.thread_ts == "1234567890.123456"
+
+    def test_revoke_event_without_thread_ts_backward_compat(self):
+        """Test RevokeEvent works without thread_ts (older scheduled jobs)."""
+        # JSON without thread_ts field (simulates older scheduled jobs)
+        event = RevokeEvent(
+            schedule_name="test-schedule",
+            approver=self._sample_user(),
+            requester=self._sample_user(),
+            user_account_assignment=self._sample_user_account_assignment(),
+            permission_duration=timedelta(hours=1),
+        )
+
+        json_str = event.json()
+        restored = RevokeEvent.model_validate_json(json_str)
+
+        assert restored.thread_ts is None
+
+    def test_group_revoke_event_with_thread_ts_json_roundtrip(self):
+        """Test GroupRevokeEvent preserves thread_ts through JSON serialization."""
+        event = GroupRevokeEvent(
+            schedule_name="test-schedule",
+            approver=self._sample_user(),
+            requester=self._sample_user(),
+            group_assignment=self._sample_group_assignment(),
+            permission_duration=timedelta(hours=1),
+            thread_ts="1234567890.654321",
+        )
+
+        json_str = event.json()
+        restored = GroupRevokeEvent.model_validate_json(json_str)
+
+        assert restored.thread_ts == "1234567890.654321"
+
+    def test_group_revoke_event_without_thread_ts_backward_compat(self):
+        """Test GroupRevokeEvent works without thread_ts (older scheduled jobs)."""
+        event = GroupRevokeEvent(
+            schedule_name="test-schedule",
+            approver=self._sample_user(),
+            requester=self._sample_user(),
+            group_assignment=self._sample_group_assignment(),
+            permission_duration=timedelta(hours=1),
+        )
+
+        json_str = event.json()
+        restored = GroupRevokeEvent.model_validate_json(json_str)
+
+        assert restored.thread_ts is None
+
+    def test_scheduled_revoke_event_parses_thread_ts_from_nested_json(self):
+        """Test ScheduledRevokeEvent model_validator preserves thread_ts from JSON string."""
+        revoke_event = RevokeEvent(
+            schedule_name="test-schedule",
+            approver=self._sample_user(),
+            requester=self._sample_user(),
+            user_account_assignment=self._sample_user_account_assignment(),
+            permission_duration=timedelta(hours=1),
+            thread_ts="1234567890.999999",
+        )
+
+        # This mimics the EventBridge payload structure where revoke_event is a JSON string
+        payload = {
+            "action": "event_bridge_revoke",
+            "revoke_event": revoke_event.json(),
+        }
+
+        # Parse using Event (the root model used in revoker.py)
+        parsed = Event.model_validate(payload)
+
+        assert isinstance(parsed.root, ScheduledRevokeEvent)
+        assert parsed.root.revoke_event.thread_ts == "1234567890.999999"
+
+    def test_scheduled_group_revoke_event_parses_thread_ts_from_nested_json(self):
+        """Test ScheduledGroupRevokeEvent model_validator preserves thread_ts from JSON string."""
+        group_revoke_event = GroupRevokeEvent(
+            schedule_name="test-schedule",
+            approver=self._sample_user(),
+            requester=self._sample_user(),
+            group_assignment=self._sample_group_assignment(),
+            permission_duration=timedelta(hours=1),
+            thread_ts="1234567890.111111",
+        )
+
+        # This mimics the EventBridge payload structure
+        payload = {
+            "action": "event_bridge_group_revoke",
+            "revoke_event": group_revoke_event.json(),
+        }
+
+        parsed = Event.model_validate(payload)
+
+        assert isinstance(parsed.root, ScheduledGroupRevokeEvent)
+        assert parsed.root.revoke_event.thread_ts == "1234567890.111111"
