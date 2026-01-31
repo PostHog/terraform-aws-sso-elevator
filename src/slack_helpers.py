@@ -68,6 +68,7 @@ class RequestForAccessView:
             type="modal",
             callback_id=cls.CALLBACK_ID,
             submit=PlainTextObject(text="Request"),
+            submit_disabled=True,
             close=PlainTextObject(text="Cancel"),
             title=PlainTextObject(text="Request AWS Access"),
             blocks=[
