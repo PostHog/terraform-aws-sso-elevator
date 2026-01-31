@@ -1018,3 +1018,165 @@ def test_make_and_excute_approve_request_decision(
     if decision.grant is not True:
         result = execute_decision(decision=decision, **execute_decision_info)
         assert result.granted is False
+
+
+# Tests for group-based access filtering
+class TestGroupBasedAccessFiltering:
+    """Tests for required_group_membership filtering in access decisions."""
+
+    def test_user_eligible_for_statement_gets_normal_decision(self):
+        """User in required group should get normal decision flow."""
+        statements = frozenset(
+            [
+                Statement.model_validate(
+                    {
+                        "resource_type": "Account",
+                        "resource": ["111111111111"],
+                        "permission_set": ["AdministratorAccess"],
+                        "approvers": ["approver@example.com"],
+                        "required_group_membership": ["admin-group"],
+                    }
+                )
+            ]
+        )
+        decision = make_decision_on_access_request(
+            statements=statements,
+            account_id="111111111111",
+            permission_set_name="AdministratorAccess",
+            requester_email="requester@example.com",
+            user_group_ids={"admin-group"},
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+        assert decision.approvers == frozenset(["approver@example.com"])
+
+    def test_user_not_eligible_for_any_statement_gets_no_statements(self):
+        """User not in any required group should get NoStatements."""
+        statements = frozenset(
+            [
+                Statement.model_validate(
+                    {
+                        "resource_type": "Account",
+                        "resource": ["111111111111"],
+                        "permission_set": ["AdministratorAccess"],
+                        "approvers": ["approver@example.com"],
+                        "required_group_membership": ["admin-group"],
+                    }
+                )
+            ]
+        )
+        decision = make_decision_on_access_request(
+            statements=statements,
+            account_id="111111111111",
+            permission_set_name="AdministratorAccess",
+            requester_email="requester@example.com",
+            user_group_ids={"other-group"},
+        )
+        assert decision.reason == DecisionReason.NoStatements
+        assert decision.grant is False
+
+    def test_empty_required_group_membership_is_backwards_compatible(self):
+        """Statement with empty required_group_membership should work for all users."""
+        statements = frozenset(
+            [
+                Statement.model_validate(
+                    {
+                        "resource_type": "Account",
+                        "resource": ["111111111111"],
+                        "permission_set": ["AdministratorAccess"],
+                        "approvers": ["approver@example.com"],
+                        "required_group_membership": [],
+                    }
+                )
+            ]
+        )
+        # Works with no groups
+        decision = make_decision_on_access_request(
+            statements=statements,
+            account_id="111111111111",
+            permission_set_name="AdministratorAccess",
+            requester_email="requester@example.com",
+            user_group_ids=set(),
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+
+        # Works with any groups
+        decision = make_decision_on_access_request(
+            statements=statements,
+            account_id="111111111111",
+            permission_set_name="AdministratorAccess",
+            requester_email="requester@example.com",
+            user_group_ids={"random-group"},
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+
+    def test_none_user_group_ids_skips_filtering(self):
+        """When user_group_ids is None, no filtering should be applied."""
+        statements = frozenset(
+            [
+                Statement.model_validate(
+                    {
+                        "resource_type": "Account",
+                        "resource": ["111111111111"],
+                        "permission_set": ["AdministratorAccess"],
+                        "approvers": ["approver@example.com"],
+                        "required_group_membership": ["admin-group"],
+                    }
+                )
+            ]
+        )
+        # Without user_group_ids, statement is included (backwards compatible)
+        decision = make_decision_on_access_request(
+            statements=statements,
+            account_id="111111111111",
+            permission_set_name="AdministratorAccess",
+            requester_email="requester@example.com",
+            user_group_ids=None,
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+
+    def test_multiple_statements_only_eligible_ones_considered(self):
+        """When multiple statements exist, only eligible ones should be considered."""
+        statements = frozenset(
+            [
+                Statement.model_validate(
+                    {
+                        "resource_type": "Account",
+                        "resource": ["111111111111"],
+                        "permission_set": ["AdministratorAccess"],
+                        "approvers": ["admin-approver@example.com"],
+                        "required_group_membership": ["admin-group"],
+                    }
+                ),
+                Statement.model_validate(
+                    {
+                        "resource_type": "Account",
+                        "resource": ["111111111111"],
+                        "permission_set": ["AdministratorAccess"],
+                        "approvers": ["regular-approver@example.com"],
+                        "required_group_membership": [],  # Available to all
+                    }
+                ),
+            ]
+        )
+
+        # User not in admin group should only see regular-approver
+        decision = make_decision_on_access_request(
+            statements=statements,
+            account_id="111111111111",
+            permission_set_name="AdministratorAccess",
+            requester_email="requester@example.com",
+            user_group_ids={"other-group"},
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+        assert decision.approvers == frozenset(["regular-approver@example.com"])
+
+        # User in admin group should see both approvers
+        decision = make_decision_on_access_request(
+            statements=statements,
+            account_id="111111111111",
+            permission_set_name="AdministratorAccess",
+            requester_email="requester@example.com",
+            user_group_ids={"admin-group"},
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+        assert decision.approvers == frozenset(["admin-approver@example.com", "regular-approver@example.com"])

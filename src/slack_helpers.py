@@ -192,6 +192,36 @@ class RequestForAccessView:
         )
 
     @classmethod
+    def build_no_eligible_accounts_block(cls) -> SectionBlock:
+        return SectionBlock(
+            block_id="no_eligible_accounts",
+            text=MarkdownTextObject(
+                text=":x: You don't have access to request any accounts. Contact your admin if you believe this is an error."
+            ),
+        )
+
+    @classmethod
+    def build_no_eligible_accounts_view(cls) -> View:
+        """Build view with warning when user has no eligible accounts."""
+        return View(
+            type="modal",
+            callback_id=cls.CALLBACK_ID,
+            submit=PlainTextObject(text="Request"),
+            submit_disabled=True,
+            close=PlainTextObject(text="Cancel"),
+            title=PlainTextObject(text="Request AWS Access"),
+            blocks=[
+                cls.build_no_eligible_accounts_block(),
+                DividerBlock(),
+                SectionBlock(
+                    text=MarkdownTextObject(
+                        text="All AWS API calls are logged for security compliance.",
+                    ),
+                ),
+            ],
+        )
+
+    @classmethod
     def build_no_permission_sets_view(cls, view_blocks: list) -> View:
         """Build view with warning and disabled submit button."""
         view = cls.build()

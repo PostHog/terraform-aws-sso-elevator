@@ -82,6 +82,7 @@ def parse_statement(_dict: dict) -> Statement:
             "resource_type": _dict.get("ResourceType"),
             "approval_is_not_required": _dict.get("ApprovalIsNotRequired"),
             "allow_self_approval": _dict.get("AllowSelfApproval"),
+            "required_group_membership": to_set_if_list_or_str(_dict.get("RequiredGroupMembership", set())),
         }
     )
 

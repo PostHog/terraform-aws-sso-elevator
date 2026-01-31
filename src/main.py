@@ -145,13 +145,49 @@ def load_select_options_for_account_access_request(client: WebClient, body: dict
     logger.info("Loading select options for view (accounts only)")
     logger.debug("Request body", extra={"body": body})
 
-    accounts = organizations.get_accounts_from_config_with_cache(org_client=org_client, s3_client=s3_client, cfg=cfg)
-
     user_id = body.get("user", {}).get("id")
     callback_id = slack_helpers.RequestForAccessView.CALLBACK_ID
     view_key = f"{user_id}:{callback_id}"
 
+    # Get user's SSO info and group memberships for filtering
+    sso_instance = sso.describe_sso_instance(sso_client, cfg.sso_instance_arn)
+    user_email = slack_helpers.get_user(client, id=user_id).email
+    user_principal_id, _ = sso.get_user_principal_id_by_email(
+        identity_store_client=identity_store_client,
+        identity_store_id=sso_instance.identity_store_id,
+        email=user_email,
+        cfg=cfg,
+    )
+    user_group_ids = sso.get_user_group_ids(
+        identity_store_client=identity_store_client,
+        identity_store_id=sso_instance.identity_store_id,
+        user_principal_id=user_principal_id,
+    )
+
+    # Cache user_group_ids for use in handle_account_selection
+    user_view_map[f"{view_key}:group_ids"] = user_group_ids
+
+    # Filter accounts based on user's eligible statements
+    eligible_account_ids = statement.get_accounts_for_user(cfg.statements, user_group_ids)
+
     view_id = user_view_map.get(view_key)
+
+    # If no eligible accounts, show empty view
+    if not eligible_account_ids:
+        logger.info("User has no eligible accounts", extra={"user_id": user_id})
+        view = slack_helpers.RequestForAccessView.build_no_eligible_accounts_view()
+        if view_id:
+            return client.views_update(view_id=view_id, view=view)
+        trigger_id = body["trigger_id"]
+        return client.views_open(trigger_id=trigger_id, view=view)
+
+    # Get all accounts and filter to eligible ones
+    all_accounts = organizations.get_accounts_from_config_with_cache(org_client=org_client, s3_client=s3_client, cfg=cfg)
+    if "*" in eligible_account_ids:
+        accounts = all_accounts
+    else:
+        accounts = [a for a in all_accounts if a.id in eligible_account_ids]
+
     if not view_id:
         logger.warning(
             f"View ID not found for key: {view_key}. "
@@ -350,11 +386,27 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
     request = slack_helpers.RequestForAccessView.parse(body)
     logger.info("View submitted", extra={"view": request})
     requester = slack_helpers.get_user(client, id=request.requester_slack_id)
+
+    # Get user's group memberships for eligibility check (defense in depth)
+    sso_instance = sso.describe_sso_instance(sso_client, cfg.sso_instance_arn)
+    user_principal_id, _ = sso.get_user_principal_id_by_email(
+        identity_store_client=identity_store_client,
+        identity_store_id=sso_instance.identity_store_id,
+        email=requester.email,
+        cfg=cfg,
+    )
+    user_group_ids = sso.get_user_group_ids(
+        identity_store_client=identity_store_client,
+        identity_store_id=sso_instance.identity_store_id,
+        user_principal_id=user_principal_id,
+    )
+
     decision = access_control.make_decision_on_access_request(
         cfg.statements,
         account_id=request.account_id,
         permission_set_name=request.permission_set_name,
         requester_email=requester.email,
+        user_group_ids=user_group_ids,
     )
     logger.info("Decision on request was made", extra={"decision": decision.dict()})
 
@@ -539,8 +591,23 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
     )
     logger.info(f"Selected account: {account_id}")
 
-    valid_ps_names = statement.get_permission_sets_for_account(cfg.statements, account_id)
-    logger.info(f"Valid permission sets for account: {valid_ps_names}")
+    # Get cached user_group_ids
+    user_id = body.get("user", {}).get("id")
+    callback_id = slack_helpers.RequestForAccessView.CALLBACK_ID
+    view_key = f"{user_id}:{callback_id}"
+    group_ids_key = f"{view_key}:group_ids"
+    user_group_ids = user_view_map.get(group_ids_key)
+    if user_group_ids is None:
+        logger.warning(
+            f"User group IDs not found in cache for key: {group_ids_key}. "
+            "This may happen if Lambda container was recycled between form load and account selection. "
+            "Defaulting to empty set, which will restrict visibility to statements without required_group_membership."
+        )
+        user_group_ids = set()
+
+    # Filter permission sets based on user's eligible statements
+    valid_ps_names = statement.get_permission_sets_for_account_and_user(cfg.statements, account_id, user_group_ids)
+    logger.info(f"Valid permission sets for account and user: {valid_ps_names}")
 
     if not valid_ps_names:
         view_id = body["view"]["id"]

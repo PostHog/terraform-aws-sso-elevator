@@ -10,7 +10,7 @@ import s3
 import schedule
 import sso
 from entities import BaseModel
-from statement import GroupStatement, Statement, get_affected_group_statements, get_affected_statements
+from statement import GroupStatement, Statement, get_affected_group_statements, get_affected_statements, get_eligible_statements_for_user
 
 logger = config.get_logger("access_control")
 cfg = config.get_config()
@@ -61,7 +61,25 @@ def make_decision_on_access_request(  # noqa: PLR0911
     permission_set_name: str | None = None,
     account_id: str | None = None,
     group_id: str | None = None,
+    user_group_ids: set[str] | None = None,
 ) -> AccessRequestDecision:
+    """Make a decision on an access request.
+
+    Args:
+        statements: The statements to evaluate.
+        requester_email: The email of the user requesting access.
+        permission_set_name: The name of the permission set being requested.
+        account_id: The AWS account ID being requested.
+        group_id: The group ID for group-based access requests.
+        user_group_ids: The set of SSO group IDs the user belongs to.
+            If None, group-based filtering is skipped (backwards compatible).
+            If an empty set, only statements without required_group_membership will match.
+    """
+    # Filter statements by user's group membership eligibility if user_group_ids provided
+    # This is only applicable to Statement (not GroupStatement)
+    if user_group_ids is not None and isinstance(statements, frozenset) and all(isinstance(s, Statement) for s in statements):
+        statements = get_eligible_statements_for_user(statements, user_group_ids)  # type: ignore # noqa: PGH003
+
     affected_statements = determine_affected_statements(statements, account_id, permission_set_name, group_id)
 
     decision_based_on_statements: set[Statement] | set[GroupStatement] = set()

@@ -575,6 +575,38 @@ def is_user_in_group(identity_store_id: str, group_id: str, sso_user_id: str, id
     return None
 
 
+def get_user_group_ids(identity_store_client: IdentityStoreClient, identity_store_id: str, user_principal_id: str) -> set[str]:
+    """Get all group IDs that a user is a member of.
+
+    Uses list_group_memberships_for_member API to efficiently get all groups for a user.
+
+    Args:
+        identity_store_client: Identity Store client
+        identity_store_id: ID of the Identity Store
+        user_principal_id: The user's principal ID in SSO
+
+    Returns:
+        Set of group IDs the user belongs to
+    """
+    logger.info("Getting group memberships for user", extra={"user_principal_id": user_principal_id})
+    group_ids: set[str] = set()
+    try:
+        paginator = identity_store_client.get_paginator("list_group_memberships_for_member")
+        for page in paginator.paginate(
+            IdentityStoreId=identity_store_id,
+            MemberId={"UserId": user_principal_id},
+        ):
+            for membership in page.get("GroupMemberships", []):
+                group_id = membership.get("GroupId")
+                if group_id:
+                    group_ids.add(group_id)
+        logger.debug("User group memberships", extra={"user_principal_id": user_principal_id, "group_ids": group_ids})
+    except Exception as e:
+        logger.error("Error getting user group memberships", extra={"user_principal_id": user_principal_id, "error": e})
+        raise
+    return group_ids
+
+
 def describe_group(identity_store_id: str, group_id: str, identity_store_client: IdentityStoreClient) -> entities.aws.SSOGroup:
     group = identity_store_client.describe_group(IdentityStoreId=identity_store_id, GroupId=group_id)
     logger.info("Group described", extra={"group": group})
