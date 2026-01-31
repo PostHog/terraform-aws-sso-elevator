@@ -137,6 +137,7 @@ def schedule_revoke_event(
     approver: entities.slack.User,
     requester: entities.slack.User,
     user_account_assignment: sso.UserAccountAssignment,
+    thread_ts: str | None = None,
 ) -> scheduler_type_defs.CreateScheduleOutputTypeDef:
     logger.info("Scheduling revoke event")
     schedule_name = f"{cfg.revoker_function_name}" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
@@ -147,6 +148,7 @@ def schedule_revoke_event(
         requester=requester,
         user_account_assignment=user_account_assignment,
         permission_duration=permission_duration,
+        thread_ts=thread_ts,
     )
     logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
     return schedule_client.create_schedule(
@@ -175,6 +177,7 @@ def schedule_group_revoke_event(
     approver: entities.slack.User,
     requester: entities.slack.User,
     group_assignment: sso.GroupAssignment,
+    thread_ts: str | None = None,
 ) -> scheduler_type_defs.CreateScheduleOutputTypeDef:
     logger.info("Scheduling revoke event")
     schedule_name = f"{cfg.revoker_function_name}" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
@@ -184,6 +187,7 @@ def schedule_group_revoke_event(
         requester=requester,
         group_assignment=group_assignment,
         permission_duration=permission_duration,
+        thread_ts=thread_ts,
     )
     get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, group_assignment)
     logger.debug("Creating schedule", extra={"revoke_event": revoke_event})

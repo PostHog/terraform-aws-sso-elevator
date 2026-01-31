@@ -138,6 +138,7 @@ def handle_request_for_group_access_submittion(
         reason=request.reason,
         decision=decision,
         identity_store_id=identity_store_id,
+        thread_ts=slack_response["ts"],
     )
 
     if decision.grant:
@@ -247,6 +248,7 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
         requester=requester,
         reason=payload.request.reason,
         identity_store_id=identity_store_id,
+        thread_ts=payload.thread_ts,
     )
     cache_for_dublicate_requests.clear()
     if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:

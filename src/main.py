@@ -289,6 +289,7 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
         approver=approver,
         requester=requester,
         reason=payload.request.reason,
+        thread_ts=payload.thread_ts,
     )
     cache_for_dublicate_requests.clear()
     if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
@@ -448,6 +449,7 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
         approver=requester,
         requester=requester,
         reason=request.reason,
+        thread_ts=slack_response["ts"],
     )
 
     if decision.grant:
