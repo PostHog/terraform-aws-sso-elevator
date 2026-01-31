@@ -496,27 +496,24 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
 
     if not valid_ps_names:
         view_id = body["view"]["id"]
-        view = slack_helpers.RequestForAccessView.build()
-        blocks = slack_helpers.remove_blocks(
-            body["view"]["blocks"],
-            block_ids=[
-                slack_helpers.RequestForAccessView.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
-                slack_helpers.RequestForAccessView.PERMISSION_SET_BLOCK_ID,
-            ],
+        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(
+            view_blocks=body["view"]["blocks"]
         )
-        blocks = slack_helpers.insert_blocks(
-            blocks=blocks,
-            blocks_to_insert=[slack_helpers.RequestForAccessView.build_no_permission_sets_block()],
-            after_block_id=slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID,
-        )
-        view.blocks = blocks
-        return client.views_update(view_id=view_id, view=view)
+        return client.views_update(view_id=view_id, view=updated_view)
 
     if "*" in valid_ps_names:
         permission_sets = sso.get_permission_sets_from_config_with_cache(sso_client=sso_client, s3_client=s3_client, cfg=cfg)
     else:
         all_ps = sso.get_permission_sets_from_config_with_cache(sso_client=sso_client, s3_client=s3_client, cfg=cfg)
         permission_sets = [ps for ps in all_ps if ps.name in valid_ps_names]
+
+    # Handle case where filtered list is empty (configured names don't exist in SSO)
+    if not permission_sets:
+        view_id = body["view"]["id"]
+        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(
+            view_blocks=body["view"]["blocks"]
+        )
+        return client.views_update(view_id=view_id, view=updated_view)
 
     view_id = body["view"]["id"]
     updated_view = slack_helpers.RequestForAccessView.update_with_permission_sets(

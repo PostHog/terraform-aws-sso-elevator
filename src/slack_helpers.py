@@ -180,6 +180,23 @@ class RequestForAccessView:
         )
 
     @classmethod
+    def build_no_permission_sets_view(cls, view_blocks: list) -> View:
+        """Build view with warning and disabled submit button."""
+        view = cls.build()
+        view.submit_disabled = True
+        blocks = remove_blocks(
+            view_blocks,
+            block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID],
+        )
+        blocks = insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[cls.build_no_permission_sets_block()],
+            after_block_id=cls.ACCOUNT_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return view
+
+    @classmethod
     def parse(cls, obj: dict) -> RequestForAccess:
         values = jp.search("view.state.values", obj)
         hhmm = jp.search(f"{cls.DURATION_BLOCK_ID}.{cls.DURATION_ACTION_ID}.selected_option.value", values)
