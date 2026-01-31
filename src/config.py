@@ -150,6 +150,7 @@ class Config(BaseSettings):
     cache_enabled: bool = True
 
     good_result_emoji: str = ":large_green_circle:"
+    allow_anyone_to_end_session_early: bool = False
 
     waiting_result_emoji: str = ":large_yellow_circle:"
     bad_result_emoji: str = ":red_circle:"

@@ -6,6 +6,7 @@ from .model import BaseModel
 class ApproverAction(Enum):
     Approve = "approve"
     Discard = "discard"
+    EarlyRevoke = "early_revoke"
 
 
 class User(BaseModel):

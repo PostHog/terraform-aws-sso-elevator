@@ -16,7 +16,7 @@ s3: S3Client = boto3.client("s3")
 @dataclass
 class AuditEntry:
     reason: str
-    operation_type: Literal["grant", "revoke", "sync_add", "sync_remove", "manual_detected"]
+    operation_type: Literal["grant", "revoke", "early_revoke", "sync_add", "sync_remove", "manual_detected"]
     permission_duration: Literal["NA"] | timedelta
     sso_user_principal_id: str
     audit_entry_type: Literal["group", "account", "sync_add", "sync_remove", "manual_detected"]

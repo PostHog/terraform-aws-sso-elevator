@@ -138,7 +138,12 @@ def schedule_revoke_event(
     requester: entities.slack.User,
     user_account_assignment: sso.UserAccountAssignment,
     thread_ts: str | None = None,
-) -> scheduler_type_defs.CreateScheduleOutputTypeDef:
+) -> tuple[scheduler_type_defs.CreateScheduleOutputTypeDef, str]:
+    """Schedule a revoke event.
+
+    Returns:
+        Tuple of (CreateScheduleOutput, schedule_name)
+    """
     logger.info("Scheduling revoke event")
     schedule_name = f"{cfg.revoker_function_name}" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
     get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, user_account_assignment)
@@ -151,7 +156,7 @@ def schedule_revoke_event(
         thread_ts=thread_ts,
     )
     logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
-    return schedule_client.create_schedule(
+    result = schedule_client.create_schedule(
         ActionAfterCompletion="DELETE",
         FlexibleTimeWindow={"Mode": "OFF"},
         Name=schedule_name,
@@ -169,6 +174,7 @@ def schedule_revoke_event(
             ),
         ),
     )
+    return result, schedule_name
 
 
 def schedule_group_revoke_event(
@@ -178,7 +184,12 @@ def schedule_group_revoke_event(
     requester: entities.slack.User,
     group_assignment: sso.GroupAssignment,
     thread_ts: str | None = None,
-) -> scheduler_type_defs.CreateScheduleOutputTypeDef:
+) -> tuple[scheduler_type_defs.CreateScheduleOutputTypeDef, str]:
+    """Schedule a group revoke event.
+
+    Returns:
+        Tuple of (CreateScheduleOutput, schedule_name)
+    """
     logger.info("Scheduling revoke event")
     schedule_name = f"{cfg.revoker_function_name}" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
     revoke_event = GroupRevokeEvent(
@@ -191,7 +202,7 @@ def schedule_group_revoke_event(
     )
     get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, group_assignment)
     logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
-    return schedule_client.create_schedule(
+    result = schedule_client.create_schedule(
         ActionAfterCompletion="DELETE",
         FlexibleTimeWindow={"Mode": "OFF"},
         Name=schedule_name,
@@ -209,6 +220,7 @@ def schedule_group_revoke_event(
             ),
         ),
     )
+    return result, schedule_name
 
 
 def schedule_discard_buttons_event(

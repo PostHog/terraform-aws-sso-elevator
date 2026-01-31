@@ -987,7 +987,8 @@ def test_execute_access_request_decision(
     execute_decision_info,
 ):
     if test_cases_for_access_request_decision["out"].grant is not True:
-        assert execute_decision(decision=test_cases_for_access_request_decision["out"], **execute_decision_info) is False
+        result = execute_decision(decision=test_cases_for_access_request_decision["out"], **execute_decision_info)
+        assert result.granted is False
 
 
 def test_execute_approve_request_decision(
@@ -995,7 +996,8 @@ def test_execute_approve_request_decision(
     execute_decision_info,
 ):
     if test_cases_for_approve_request_decision["out"].grant is not True:
-        assert execute_decision(decision=test_cases_for_approve_request_decision["out"], **execute_decision_info) is False
+        result = execute_decision(decision=test_cases_for_approve_request_decision["out"], **execute_decision_info)
+        assert result.granted is False
 
 
 def test_make_and_excute_access_request_decision(
@@ -1004,7 +1006,8 @@ def test_make_and_excute_access_request_decision(
 ):
     decision = make_decision_on_access_request(**test_cases_for_access_request_decision["in"])
     if decision.grant is not True:
-        assert execute_decision(decision=decision, **execute_decision_info) is False
+        result = execute_decision(decision=decision, **execute_decision_info)
+        assert result.granted is False
 
 
 def test_make_and_excute_approve_request_decision(
@@ -1013,4 +1016,5 @@ def test_make_and_excute_approve_request_decision(
 ):
     decision = make_decision_on_approve_request(**test_cases_for_approve_request_decision["in"])
     if decision.grant is not True:
-        assert execute_decision(decision=decision, **execute_decision_info) is False
+        result = execute_decision(decision=decision, **execute_decision_info)
+        assert result.granted is False

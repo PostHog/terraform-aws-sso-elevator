@@ -124,6 +124,23 @@ class ApproveRequestDecision(BaseModel):
     based_on_statements: FrozenSet[Statement] | FrozenSet[GroupStatement]
 
 
+class ExecuteDecisionResult(BaseModel):
+    """Result of executing an access decision."""
+
+    granted: bool
+    schedule_name: str | None = None
+    instance_arn: str | None = None
+    permission_set_arn: str | None = None
+    permission_set_name: str | None = None
+    account_id: str | None = None
+    user_principal_id: str | None = None
+    # For group access
+    group_id: str | None = None
+    group_name: str | None = None
+    identity_store_id: str | None = None
+    membership_id: str | None = None
+
+
 def make_decision_on_approve_request(  # noqa: PLR0913
     action: entities.ApproverAction,
     statements: frozenset[Statement],
@@ -161,11 +178,11 @@ def execute_decision(  # noqa: PLR0913
     requester: entities.slack.User,
     reason: str,
     thread_ts: str | None = None,
-) -> bool:
+) -> ExecuteDecisionResult:
     logger.info("Executing decision")
     if not decision.grant:
         logger.info("Access request denied")
-        return False  # Temporary solution for testing
+        return ExecuteDecisionResult(granted=False)
 
     sso_instance = sso.describe_sso_instance(sso_client, cfg.sso_instance_arn)
     permission_set = sso.get_permission_set_by_name(sso_client, sso_instance.arn, permission_set_name)
@@ -205,7 +222,7 @@ def execute_decision(  # noqa: PLR0913
         ),
     )
 
-    schedule.schedule_revoke_event(
+    _, schedule_name = schedule.schedule_revoke_event(
         permission_duration=permission_duration,
         schedule_client=schedule_client,
         approver=approver,
@@ -218,7 +235,16 @@ def execute_decision(  # noqa: PLR0913
         ),
         thread_ts=thread_ts,
     )
-    return True  # Temporary solution for testing
+
+    return ExecuteDecisionResult(
+        granted=True,
+        schedule_name=schedule_name,
+        instance_arn=sso_instance.arn,
+        permission_set_arn=permission_set.arn,
+        permission_set_name=permission_set.name,
+        account_id=account_id,
+        user_principal_id=sso_user_principal_id,
+    )
 
 
 def execute_decision_on_group_request(  # noqa: PLR0913
@@ -230,11 +256,11 @@ def execute_decision_on_group_request(  # noqa: PLR0913
     reason: str,
     identity_store_id: str,
     thread_ts: str | None = None,
-) -> bool:
+) -> ExecuteDecisionResult:
     logger.info("Executing decision")
     if not decision.grant:
         logger.info("Access request denied")
-        return False  # Temporary solution for testing
+        return ExecuteDecisionResult(granted=False)
 
     sso_user_principal_id, secondary_domain_was_used = sso.get_user_principal_id_by_email(
         identity_store_client=identitystore_client,
@@ -275,7 +301,7 @@ def execute_decision_on_group_request(  # noqa: PLR0913
         ),
     )
 
-    schedule.schedule_group_revoke_event(
+    _, schedule_name = schedule.schedule_group_revoke_event(
         permission_duration=permission_duration,
         schedule_client=schedule_client,
         approver=approver,
@@ -289,4 +315,13 @@ def execute_decision_on_group_request(  # noqa: PLR0913
         ),
         thread_ts=thread_ts,
     )
-    return  # type: ignore # noqa: PGH003
+
+    return ExecuteDecisionResult(
+        granted=True,
+        schedule_name=schedule_name,
+        group_id=group.id,
+        group_name=group.name,
+        identity_store_id=identity_store_id,
+        membership_id=membership_id,
+        user_principal_id=sso_user_principal_id,
+    )

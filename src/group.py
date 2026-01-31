@@ -130,7 +130,7 @@ def handle_request_for_group_access_submittion(
         text=text,
     )
 
-    access_control.execute_decision_on_group_request(
+    result = access_control.execute_decision_on_group_request(
         group=group,
         permission_duration=request.permission_duration,
         approver=requester,
@@ -141,7 +141,7 @@ def handle_request_for_group_access_submittion(
         thread_ts=slack_response["ts"],
     )
 
-    if decision.grant:
+    if result.granted:
         client.chat_postMessage(
             channel=cfg.slack_channel_id,
             text=f"Permissions granted to <@{requester.id}>",
@@ -151,6 +151,26 @@ def handle_request_for_group_access_submittion(
             client.chat_postMessage(
                 channel=requester.id,
                 text="Your request was processed, permissions granted.",
+            )
+
+        # Post the "End session early" button
+        if result.schedule_name:
+            approver_emails = list(decision.based_on_statements)[0].approvers if decision.based_on_statements else []
+            early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
+                schedule_name=result.schedule_name,
+                requester_slack_id=requester.id,
+                group_id=result.group_id,
+                group_name=result.group_name,
+                identity_store_id=result.identity_store_id,
+                membership_id=result.membership_id,
+                user_principal_id=result.user_principal_id,
+                approver_emails=list(approver_emails),
+            )
+            client.chat_postMessage(
+                channel=cfg.slack_channel_id,
+                thread_ts=slack_response["ts"],
+                blocks=[slack_helpers.build_early_revoke_button(early_revoke_payload).to_dict()],
+                text="End session early",
             )
 
 
@@ -240,9 +260,10 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
         text=text,
     )
 
-    access_control.execute_decision_on_group_request(
+    group = sso.describe_group(identity_store_id, payload.request.group_id, identity_store_client)
+    result = access_control.execute_decision_on_group_request(
         decision=decision,
-        group=sso.describe_group(identity_store_id, payload.request.group_id, identity_store_client),
+        group=group,
         permission_duration=payload.request.permission_duration,
         approver=approver,
         requester=requester,
@@ -254,6 +275,27 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
     if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
         logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")
         client.chat_postMessage(channel=requester.id, text=dm_text)
+
+    # Post the "End session early" button after permissions are granted
+    if result.granted and result.schedule_name:
+        approver_emails = list(decision.based_on_statements)[0].approvers if decision.based_on_statements else []
+        early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
+            schedule_name=result.schedule_name,
+            requester_slack_id=requester.id,
+            group_id=result.group_id,
+            group_name=result.group_name,
+            identity_store_id=result.identity_store_id,
+            membership_id=result.membership_id,
+            user_principal_id=result.user_principal_id,
+            approver_emails=list(approver_emails),
+        )
+        client.chat_postMessage(
+            channel=payload.channel_id,
+            thread_ts=payload.thread_ts,
+            blocks=[slack_helpers.build_early_revoke_button(early_revoke_payload).to_dict()],
+            text="End session early",
+        )
+
     return client.chat_postMessage(
         channel=payload.channel_id,
         text=text,
