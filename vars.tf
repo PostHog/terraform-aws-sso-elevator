@@ -331,6 +331,16 @@ Please ensure these permissions are enabled in the Slack app configuration.
 EOT
 }
 
+variable "allow_anyone_to_end_session_early" {
+  type        = bool
+  default     = false
+  description = <<EOT
+Controls who can click the "End session early" button to revoke access before the scheduled expiration.
+If false (default), only the requester and approvers listed in the matching statement can end the session.
+If true, anyone in the Slack channel can end any session early.
+EOT
+}
+
 variable "lambda_timeout" {
   description = "The amount of time your Lambda Function has to run in seconds."
   type        = number

@@ -279,17 +279,25 @@ def build_approval_request_message_blocks(  # noqa: PLR0913
     identity_store_client: IdentityStoreClient,
     permission_duration: timedelta,
     reason: str,
-    color_coding_emoji: str,
+    status_text: str,
     account: Optional[entities.aws.Account] = None,
     group: Optional[entities.aws.SSOGroup] = None,
     role_name: Optional[str] = None,
     show_buttons: bool = True,
 ) -> list[Block]:
     fields = [
-        MarkdownTextObject(text=f"Requester: <@{requester_slack_id}>"),
-        MarkdownTextObject(text=f"Reason: {reason}"),
-        MarkdownTextObject(text=f"Permission duration: {humanize_timedelta(permission_duration)}"),
+        MarkdownTextObject(text=f"*Requester*\n<@{requester_slack_id}>"),
     ]
+
+    if group:
+        fields.append(MarkdownTextObject(text=f"*Group*\n{group.name} ({group.id})"))
+    elif account and role_name:
+        fields.append(MarkdownTextObject(text=f"*Account*\n{account.name} ({account.id})"))
+        fields.append(MarkdownTextObject(text=f"*Permission Set*\n{role_name}"))
+
+    fields.append(MarkdownTextObject(text=f"*Duration*\n{humanize_timedelta(permission_duration)}"))
+    fields.append(MarkdownTextObject(text=f"*Reason*\n{reason}"))
+
     _, secondary_domain_was_used = sso.get_user_principal_id_by_email(
         identity_store_client=identity_store_client,
         identity_store_id=sso.describe_sso_instance(sso_client, cfg.sso_instance_arn).identity_store_id,
@@ -309,14 +317,9 @@ def build_approval_request_message_blocks(  # noqa: PLR0913
                 )
             )
         )
-    if group:
-        fields.insert(1, MarkdownTextObject(text=f"Group: {group.name} #{group.id}"))
-    elif account and role_name:
-        fields.insert(1, MarkdownTextObject(text=f"Account: {account.name} #{account.id}"))
-        fields.insert(2, MarkdownTextObject(text=f"Role name: {role_name}"))
 
     blocks: list[Block] = [
-        HeaderSectionBlock.new(color_coding_emoji),
+        HeaderSectionBlock.new(status_text),
         SectionBlock(block_id="content", fields=fields),
     ]
     if show_buttons:
@@ -346,15 +349,15 @@ class HeaderSectionBlock:
     block_id = "header"
 
     @classmethod
-    def new(cls, color_coding_emoji: str) -> SectionBlock:
+    def new(cls, status_text: str) -> SectionBlock:
         return SectionBlock(
-            block_id=cls.block_id, text=MarkdownTextObject(text=f"{color_coding_emoji} | AWS account access request | {color_coding_emoji}")
+            block_id=cls.block_id, text=MarkdownTextObject(text=status_text)
         )
 
     @staticmethod
-    def set_color_coding(blocks: list[dict], color_coding_emoji: str) -> list[dict]:
+    def set_status(blocks: list[dict], status_text: str) -> list[dict]:
         blocks = remove_blocks(blocks, block_ids=[HeaderSectionBlock.block_id])
-        b = HeaderSectionBlock.new(color_coding_emoji)
+        b = HeaderSectionBlock.new(status_text)
         blocks.insert(0, b.to_dict())
         return blocks
 
@@ -511,10 +514,33 @@ def get_max_duration_block(cfg: config.Config) -> list[Option]:
             elements = elements[:99] + elements[-1:]
         return [Option(text=PlainTextObject(text=s), value=s) for s in elements]
     else:
-        max_increments = min(cfg.max_permissions_duration_time * 2, 99)
+        base_durations = [0.25, 0.5, 1, 2, 4, 8, 12, 24]  # hours
+        max_hours = cfg.max_permissions_duration_time
+
+        # Filter to max, add max if not present
+        durations = [d for d in base_durations if d <= max_hours]
+        if max_hours not in durations:
+            durations.append(max_hours)
+            durations.sort()
+
+        def format_display(hours: float) -> str:
+            """Human-readable: '15 min', '1 hour', '2 hours'"""
+            if hours < 1:
+                return f"{int(hours * 60)} min"
+            elif hours == 1:
+                return "1 hour"
+            else:
+                return f"{int(hours)} hours"
+
+        def format_value(hours: float) -> str:
+            """HH:MM for backend parsing"""
+            h = int(hours)
+            m = int((hours - h) * 60)
+            return f"{h:02d}:{m:02d}"
+
         return [
-            Option(text=PlainTextObject(text=f"{i // 2:02d}:{(i % 2) * 30:02d}"), value=f"{i // 2:02d}:{(i % 2) * 30:02d}")
-            for i in range(1, max_increments + 1)
+            Option(text=PlainTextObject(text=format_display(d)), value=format_value(d))
+            for d in durations
         ]
 
 
@@ -540,6 +566,141 @@ def find_approvers_in_slack(client: WebClient, approver_emails: list[str]) -> tu
 # -----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----
 # -----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----
 # -----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----
+
+
+class EarlyRevokeButtonPayload(BaseModel):
+    """Payload for early revoke button click."""
+
+    schedule_name: str
+    requester_slack_id: str
+    account_id: Optional[str] = None
+    permission_set_name: Optional[str] = None
+    permission_set_arn: Optional[str] = None
+    instance_arn: Optional[str] = None
+    user_principal_id: str
+    # For group access
+    group_id: Optional[str] = None
+    group_name: Optional[str] = None
+    identity_store_id: Optional[str] = None
+    membership_id: Optional[str] = None
+    # For looking up approvers
+    approver_emails: list[str] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_json_value(cls, values: dict) -> dict:
+        # When receiving from button click, value comes as JSON string
+        if isinstance(values, str):
+            import json
+
+            return json.loads(values)
+        return values
+
+
+def build_early_revoke_button(payload: EarlyRevokeButtonPayload) -> ActionsBlock:
+    """Build an 'End session early' button for the approval thread."""
+    import json
+
+    return ActionsBlock(
+        block_id="early_revoke_button",
+        elements=[
+            ButtonElement(
+                action_id=entities.ApproverAction.EarlyRevoke.value,
+                text=PlainTextObject(text="End session early"),
+                value=json.dumps(payload.model_dump(mode="json")),
+            ),
+        ],
+    )
+
+
+class EarlyRevokeModal:
+    """Modal view for early revocation with optional reason field."""
+
+    CALLBACK_ID = "early_revoke_modal"
+    REASON_BLOCK_ID = "early_revoke_reason"
+    REASON_ACTION_ID = "early_revoke_reason_input"
+
+    @classmethod
+    def build(
+        cls,
+        account_name: Optional[str] = None,
+        account_id: Optional[str] = None,
+        permission_set_name: Optional[str] = None,
+        group_name: Optional[str] = None,
+        group_id: Optional[str] = None,
+        private_metadata: str = "",
+    ) -> View:
+        """Build the early revoke modal view."""
+        if account_name and account_id and permission_set_name:
+            context_text = f"*Account:* {account_name} ({account_id})\n*Role:* {permission_set_name}"
+        elif group_name and group_id:
+            context_text = f"*Group:* {group_name} ({group_id})"
+        else:
+            context_text = "Access details unavailable"
+
+        return View(
+            type="modal",
+            callback_id=cls.CALLBACK_ID,
+            private_metadata=private_metadata,
+            submit=PlainTextObject(text="Revoke"),
+            close=PlainTextObject(text="Cancel"),
+            title=PlainTextObject(text="Revoke Access Early"),
+            blocks=[
+                SectionBlock(
+                    block_id="context",
+                    text=MarkdownTextObject(text="You are about to revoke access to:"),
+                ),
+                SectionBlock(
+                    block_id="details",
+                    text=MarkdownTextObject(text=context_text),
+                ),
+                DividerBlock(),
+                InputBlock(
+                    block_id=cls.REASON_BLOCK_ID,
+                    optional=True,
+                    label=PlainTextObject(text="Reason (optional)"),
+                    element=PlainTextInputElement(
+                        action_id=cls.REASON_ACTION_ID,
+                        placeholder=PlainTextObject(text="e.g. Task completed, no longer needed"),
+                        multiline=True,
+                    ),
+                ),
+            ],
+        )
+
+
+class EarlyRevokeModalPayload(BaseModel):
+    """Payload parsed from early revoke modal submission."""
+
+    revoker_slack_id: str
+    reason: Optional[str] = None
+    button_payload: EarlyRevokeButtonPayload
+    channel_id: str
+    thread_ts: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_view_submission(cls, values: dict) -> dict:
+        import json
+
+        # Parse reason from view state
+        view_state = jp.search("view.state.values", values) or {}
+        reason = jp.search(
+            f"{EarlyRevokeModal.REASON_BLOCK_ID}.{EarlyRevokeModal.REASON_ACTION_ID}.value",
+            view_state,
+        )
+
+        # Parse button payload from private_metadata
+        private_metadata = jp.search("view.private_metadata", values) or "{}"
+        metadata = json.loads(private_metadata)
+
+        return {
+            "revoker_slack_id": jp.search("user.id", values),
+            "reason": reason,
+            "button_payload": EarlyRevokeButtonPayload.model_validate(metadata.get("button_payload", {})),
+            "channel_id": metadata.get("channel_id", ""),
+            "thread_ts": metadata.get("thread_ts", ""),
+        }
 
 
 class RequestForGroupAccess(entities.BaseModel):

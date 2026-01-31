@@ -150,10 +150,18 @@ class Config(BaseSettings):
     cache_enabled: bool = True
 
     good_result_emoji: str = ":large_green_circle:"
+    allow_anyone_to_end_session_early: bool = False
 
     waiting_result_emoji: str = ":large_yellow_circle:"
     bad_result_emoji: str = ":red_circle:"
     discarded_result_emoji: str = ":white_circle:"
+
+    # Status badges for Slack messages
+    pending_status: str = ":hourglass_flowing_sand: *AWAITING APPROVAL*"
+    granted_status: str = ":white_check_mark: *GRANTED*"
+    denied_status: str = ":x: *DENIED*"
+    timed_out_status: str = ":clock1: *TIMED OUT*"
+    access_ended_status: str = ":lock: *ACCESS ENDED*"
 
     @model_validator(mode="before")
     @classmethod

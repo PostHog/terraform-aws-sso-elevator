@@ -67,6 +67,7 @@ module "access_requester_slack_handler" {
     PERMISSION_DURATION_LIST_OVERRIDE           = jsonencode(var.permission_duration_list_override)
     SECONDARY_FALLBACK_EMAIL_DOMAINS            = jsonencode(var.secondary_fallback_email_domains)
     SEND_DM_IF_USER_NOT_IN_CHANNEL              = var.send_dm_if_user_not_in_channel
+    ALLOW_ANYONE_TO_END_SESSION_EARLY           = var.allow_anyone_to_end_session_early
     CONFIG_BUCKET_NAME                          = local.config_bucket_name
     CONFIG_S3_KEY                               = "config/approval-config.json"
     CACHE_ENABLED                               = var.cache_enabled

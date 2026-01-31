@@ -13,6 +13,7 @@ import config
 import entities
 import group
 import organizations
+import revoker
 import schedule
 import slack_helpers
 import sso
@@ -219,9 +220,9 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
     cache_for_dublicate_requests["permission_set_name"] = payload.request.permission_set_name
 
     if payload.action == entities.ApproverAction.Discard:
-        blocks = slack_helpers.HeaderSectionBlock.set_color_coding(
+        blocks = slack_helpers.HeaderSectionBlock.set_status(
             blocks=payload.message["blocks"],
-            color_coding_emoji=cfg.bad_result_emoji,
+            status_text=cfg.denied_status,
         )
 
         blocks = slack_helpers.remove_blocks(blocks, block_ids=["buttons"])
@@ -266,9 +267,9 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
 
     text = f"Permissions granted to <@{requester.id}> by <@{approver.id}>."
     dm_text = f"Your request was approved by <@{approver.id}>. Permissions granted."
-    blocks = slack_helpers.HeaderSectionBlock.set_color_coding(
+    blocks = slack_helpers.HeaderSectionBlock.set_status(
         blocks=payload.message["blocks"],
-        color_coding_emoji=cfg.good_result_emoji,
+        status_text=cfg.granted_status,
     )
 
     blocks = slack_helpers.remove_blocks(blocks, block_ids=["buttons"])
@@ -281,7 +282,7 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
         text=text,
     )
 
-    access_control.execute_decision(
+    result = access_control.execute_decision(
         decision=decision,
         permission_set_name=payload.request.permission_set_name,
         account_id=payload.request.account_id,
@@ -295,6 +296,27 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
     if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
         logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")
         client.chat_postMessage(channel=requester.id, text=dm_text)
+
+    # Post the "End session early" button after permissions are granted
+    if result.granted and result.schedule_name:
+        approver_emails = list(decision.based_on_statements)[0].approvers if decision.based_on_statements else []
+        early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
+            schedule_name=result.schedule_name,
+            requester_slack_id=requester.id,
+            account_id=result.account_id,
+            permission_set_name=result.permission_set_name,
+            permission_set_arn=result.permission_set_arn,
+            instance_arn=result.instance_arn,
+            user_principal_id=result.user_principal_id,
+            approver_emails=list(approver_emails),
+        )
+        client.chat_postMessage(
+            channel=payload.channel_id,
+            thread_ts=payload.thread_ts,
+            blocks=[slack_helpers.build_early_revoke_button(early_revoke_payload).to_dict()],
+            text="End session early",
+        )
+
     return client.chat_postMessage(
         channel=payload.channel_id,
         text=text,
@@ -350,7 +372,7 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
             reason=request.reason,
             permission_duration=request.permission_duration,
             show_buttons=show_buttons,
-            color_coding_emoji=cfg.waiting_result_emoji,
+            status_text=cfg.pending_status,
         ),
         channel=cfg.slack_channel_id,
         text=f"Request for access to {account.name} account from {requester.real_name}",
@@ -377,11 +399,11 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
         case access_control.DecisionReason.ApprovalNotRequired:
             text = "Approval for this Permission Set & Account is not required. Request will be approved automatically."
             dm_text = "Approval for this Permission Set & Account is not required. Your request will be approved automatically."
-            color_coding_emoji = cfg.good_result_emoji
+            status_text = cfg.granted_status
         case access_control.DecisionReason.SelfApproval:
             text = "Self approval is allowed and requester is an approver. Request will be approved automatically."
             dm_text = "Self approval is allowed and you are an approver. Your request will be approved automatically."
-            color_coding_emoji = cfg.good_result_emoji
+            status_text = cfg.granted_status
         case access_control.DecisionReason.RequiresApproval:
             approvers, approver_emails_not_found = slack_helpers.find_approvers_in_slack(
                 client,
@@ -396,7 +418,7 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
                 Your request cannot be processed because none of the approvers from configuration could be found in Slack.
                 Please discard the request and check the module configuration.
                 """
-                color_coding_emoji = cfg.bad_result_emoji
+                status_text = cfg.denied_status
             else:
                 mention_approvers = " ".join(f"<@{approver.id}>" for approver in approvers)
                 text = f"{mention_approvers} there is a request waiting for the approval."
@@ -407,15 +429,15 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
                     Please discard the request and check the module configuration.
                     """
                 dm_text = f"Your request is waiting for the approval from {mention_approvers}."
-                color_coding_emoji = cfg.waiting_result_emoji
+                status_text = cfg.pending_status
         case access_control.DecisionReason.NoApprovers:
             text = "Nobody can approve this request."
             dm_text = "Nobody can approve this request."
-            color_coding_emoji = cfg.bad_result_emoji
+            status_text = cfg.denied_status
         case access_control.DecisionReason.NoStatements:
             text = "There are no statements for this Permission Set & Account."
             dm_text = "There are no statements for this Permission Set & Account."
-            color_coding_emoji = cfg.bad_result_emoji
+            status_text = cfg.denied_status
 
     is_user_in_channel = slack_helpers.check_if_user_is_in_channel(client, cfg.slack_channel_id, requester.id)
 
@@ -430,9 +452,9 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
             """,
         )
 
-    blocks = slack_helpers.HeaderSectionBlock.set_color_coding(
+    blocks = slack_helpers.HeaderSectionBlock.set_status(
         blocks=slack_response["message"]["blocks"],
-        color_coding_emoji=color_coding_emoji,
+        status_text=status_text,
     )
     client.chat_update(
         channel=cfg.slack_channel_id,
@@ -441,7 +463,7 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
         text=text,
     )
 
-    access_control.execute_decision(
+    result = access_control.execute_decision(
         decision=decision,
         permission_set_name=request.permission_set_name,
         account_id=request.account_id,
@@ -452,7 +474,7 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
         thread_ts=slack_response["ts"],
     )
 
-    if decision.grant:
+    if result.granted:
         client.chat_postMessage(
             channel=cfg.slack_channel_id,
             text=f"Permissions granted to <@{requester.id}>",
@@ -462,6 +484,26 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
             client.chat_postMessage(
                 channel=requester.id,
                 text="Your request was processed, permissions granted.",
+            )
+
+        # Post the "End session early" button
+        if result.schedule_name:
+            approver_emails = list(decision.based_on_statements)[0].approvers if decision.based_on_statements else []
+            early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
+                schedule_name=result.schedule_name,
+                requester_slack_id=requester.id,
+                account_id=result.account_id,
+                permission_set_name=result.permission_set_name,
+                permission_set_arn=result.permission_set_arn,
+                instance_arn=result.instance_arn,
+                user_principal_id=result.user_principal_id,
+                approver_emails=list(approver_emails),
+            )
+            client.chat_postMessage(
+                channel=cfg.slack_channel_id,
+                thread_ts=slack_response["ts"],
+                blocks=[slack_helpers.build_early_revoke_button(early_revoke_payload).to_dict()],
+                text="End session early",
             )
 
 
@@ -523,3 +565,194 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
         permission_sets=permission_sets,
     )
     return client.views_update(view_id=view_id, view=updated_view)
+
+
+# Early Revoke Handlers
+# ----------------------
+
+
+def check_early_revoke_authorization(
+    clicker_slack_id: str,
+    requester_slack_id: str,
+    approver_emails: list[str],
+    client: WebClient,
+) -> bool:
+    """Check if the user clicking the button is authorized to end the session.
+
+    Returns True if:
+    - cfg.allow_anyone_to_end_session_early is True, OR
+    - clicker is the requester, OR
+    - clicker is one of the approvers
+    """
+    if cfg.allow_anyone_to_end_session_early:
+        return True
+
+    # Requester can always end their own session
+    if clicker_slack_id == requester_slack_id:
+        return True
+
+    # Check if clicker is an approver
+    try:
+        clicker = slack_helpers.get_user(client, id=clicker_slack_id)
+        if clicker.email in approver_emails:
+            return True
+    except Exception as e:
+        logger.warning(f"Failed to get user info for authorization check: {e}")
+
+    return False
+
+
+@handle_errors
+def handle_early_revoke_button_click(body: dict, client: WebClient, context: BoltContext) -> SlackResponse | None:  # noqa: ARG001
+    """Handle the 'End session early' button click."""
+    import json
+
+    logger.info("Handling early revoke button click")
+
+    clicker_slack_id = jp.search("user.id", body)
+    channel_id = jp.search("channel.id", body)
+    thread_ts = jp.search("message.thread_ts", body) or jp.search("message.ts", body)
+
+    # Parse the button value
+    button_value = jp.search("actions[0].value", body)
+    try:
+        button_payload = slack_helpers.EarlyRevokeButtonPayload.model_validate(json.loads(button_value))
+    except Exception as e:
+        logger.error(f"Failed to parse early revoke button payload: {e}")
+        return client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text="Failed to process early revoke request. Please try again.",
+        )
+
+    # Check authorization
+    if not check_early_revoke_authorization(
+        clicker_slack_id=clicker_slack_id,
+        requester_slack_id=button_payload.requester_slack_id,
+        approver_emails=button_payload.approver_emails,
+        client=client,
+    ):
+        return client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=f"<@{clicker_slack_id}> You are not authorized to end this session. Only the requester or approvers can do this.",
+        )
+
+    # Determine if this is account access or group access
+    if button_payload.account_id and button_payload.permission_set_name:
+        # Account access - get account name for modal
+        try:
+            account = organizations.describe_account(org_client, button_payload.account_id)
+            account_name = account.name
+        except Exception:
+            account_name = button_payload.account_id
+
+        private_metadata = json.dumps({
+            "button_payload": button_payload.model_dump(mode="json"),
+            "channel_id": channel_id,
+            "thread_ts": thread_ts,
+        })
+
+        modal = slack_helpers.EarlyRevokeModal.build(
+            account_name=account_name,
+            account_id=button_payload.account_id,
+            permission_set_name=button_payload.permission_set_name,
+            private_metadata=private_metadata,
+        )
+    elif button_payload.group_id and button_payload.group_name:
+        # Group access
+        private_metadata = json.dumps({
+            "button_payload": button_payload.model_dump(mode="json"),
+            "channel_id": channel_id,
+            "thread_ts": thread_ts,
+        })
+
+        modal = slack_helpers.EarlyRevokeModal.build(
+            group_name=button_payload.group_name,
+            group_id=button_payload.group_id,
+            private_metadata=private_metadata,
+        )
+    else:
+        return client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text="Invalid early revoke request: missing access details.",
+        )
+
+    # Open the modal
+    trigger_id = jp.search("trigger_id", body)
+    return client.views_open(trigger_id=trigger_id, view=modal)
+
+
+app.action(entities.ApproverAction.EarlyRevoke.value)(
+    ack=acknowledge_request,
+    lazy=[handle_early_revoke_button_click],
+)
+
+
+@handle_errors
+def handle_early_revoke_modal_submission(body: dict, client: WebClient, context: BoltContext) -> SlackResponse | None:  # noqa: ARG001
+    """Handle the early revoke modal submission."""
+    logger.info("Handling early revoke modal submission")
+
+    try:
+        payload = slack_helpers.EarlyRevokeModalPayload.model_validate(body)
+    except Exception as e:
+        logger.error(f"Failed to parse early revoke modal payload: {e}")
+        return None
+
+    button_payload = payload.button_payload
+
+    # Perform the revocation
+    if button_payload.account_id and button_payload.permission_set_arn:
+        # Account access revocation
+        user_account_assignment = sso.UserAccountAssignment(
+            instance_arn=button_payload.instance_arn,
+            account_id=button_payload.account_id,
+            permission_set_arn=button_payload.permission_set_arn,
+            user_principal_id=button_payload.user_principal_id,
+        )
+
+        revoker.handle_early_account_revocation(
+            user_account_assignment=user_account_assignment,
+            schedule_name=button_payload.schedule_name,
+            revoker_slack_id=payload.revoker_slack_id,
+            requester_slack_id=button_payload.requester_slack_id,
+            reason=payload.reason,
+            sso_client=sso_client,
+            scheduler_client=schedule_client,
+            org_client=org_client,
+            slack_client=client,
+            identitystore_client=identity_store_client,
+            cfg=cfg,
+            thread_ts=payload.thread_ts,
+        )
+    elif button_payload.group_id and button_payload.membership_id:
+        # Group access revocation
+        group_assignment = sso.GroupAssignment(
+            group_name=button_payload.group_name,
+            group_id=button_payload.group_id,
+            user_principal_id=button_payload.user_principal_id,
+            membership_id=button_payload.membership_id,
+            identity_store_id=button_payload.identity_store_id,
+        )
+
+        revoker.handle_early_group_revocation(
+            group_assignment=group_assignment,
+            schedule_name=button_payload.schedule_name,
+            revoker_slack_id=payload.revoker_slack_id,
+            requester_slack_id=button_payload.requester_slack_id,
+            reason=payload.reason,
+            sso_client=sso_client,
+            scheduler_client=schedule_client,
+            slack_client=client,
+            identitystore_client=identity_store_client,
+            cfg=cfg,
+            thread_ts=payload.thread_ts,
+        )
+
+
+app.view(slack_helpers.EarlyRevokeModal.CALLBACK_ID)(
+    ack=acknowledge_request,
+    lazy=[handle_early_revoke_modal_submission],
+)

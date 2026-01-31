@@ -123,6 +123,216 @@ def lambda_handler(event: dict, __) -> SlackResponse | None:  # type: ignore # n
             )
 
 
+def handle_early_account_revocation(  # noqa: PLR0913
+    user_account_assignment: sso.UserAccountAssignment,
+    schedule_name: str,
+    revoker_slack_id: str,
+    requester_slack_id: str,
+    reason: str | None,
+    sso_client: SSOAdminClient,
+    scheduler_client: EventBridgeSchedulerClient,
+    org_client: OrganizationsClient,
+    slack_client: slack_sdk.WebClient,
+    identitystore_client: IdentityStoreClient,
+    cfg: config.Config,
+    thread_ts: str | None = None,
+) -> SlackResponse | None:
+    """Handle early revocation of account access.
+
+    Order of operations:
+    1. Revoke SSO assignment FIRST (so if delete_schedule fails, perms are still revoked)
+    2. Delete schedule (already handles ResourceNotFoundException gracefully)
+    3. Log to S3 audit trail
+    4. Post confirmation to thread
+    """
+    logger.info("Handling early account revocation", extra={"schedule_name": schedule_name})
+
+    # 1. Revoke SSO assignment first
+    try:
+        assignment_status = sso.delete_account_assignment_and_wait_for_result(
+            sso_client,
+            user_account_assignment,
+        )
+    except Exception as e:
+        logger.error("Failed to delete account assignment during early revocation", extra={"error": str(e)})
+        raise
+
+    permission_set = sso.describe_permission_set(
+        sso_client,
+        user_account_assignment.instance_arn,
+        user_account_assignment.permission_set_arn,
+    )
+
+    # 2. Delete the scheduled revocation (handles ResourceNotFoundException)
+    schedule.delete_schedule(scheduler_client, schedule_name)
+
+    # 3. Log to S3 audit trail
+    revoker = slack_helpers.get_user(slack_client, id=revoker_slack_id)
+    requester = slack_helpers.get_user(slack_client, id=requester_slack_id)
+
+    s3.log_operation(
+        s3.AuditEntry(
+            role_name=permission_set.name,
+            account_id=user_account_assignment.account_id,
+            reason=reason or "early_revocation",
+            requester_slack_id=requester.id,
+            requester_email=requester.email,
+            request_id=assignment_status.request_id,
+            approver_slack_id=revoker.id,
+            approver_email=revoker.email,
+            operation_type="early_revoke",
+            permission_duration="NA",
+            sso_user_principal_id=user_account_assignment.user_principal_id,
+            audit_entry_type="account",
+        ),
+    )
+
+    # 4. Update header and post confirmation to thread
+    if cfg.post_update_to_slack and thread_ts:
+        # Update the original message header to ACCESS ENDED
+        message = slack_helpers.get_message_from_timestamp(
+            channel_id=cfg.slack_channel_id,
+            message_ts=thread_ts,
+            slack_client=slack_client,
+        )
+        if message:
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
+                blocks=message["blocks"],
+                status_text=cfg.access_ended_status,
+            )
+            slack_client.chat_update(
+                channel=cfg.slack_channel_id,
+                ts=thread_ts,
+                blocks=blocks,
+                text="Access ended",
+            )
+
+        reason_text = f" Reason: {reason}" if reason else ""
+        text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
+        return slack_client.chat_postMessage(
+            channel=cfg.slack_channel_id,
+            text=text,
+            thread_ts=thread_ts,
+        )
+    elif cfg.post_update_to_slack:
+        # Full message when not in a thread
+        account = organizations.describe_account(org_client, user_account_assignment.account_id)
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=user_account_assignment.user_principal_id,
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identitystore_client,
+            slack_client=slack_client,
+        )
+        reason_text = f" Reason: {reason}" if reason else ""
+        text = f"<@{revoker_slack_id}> ended the session early for {mention} (role {permission_set.name} in {account.name}).{reason_text}"
+        return slack_client.chat_postMessage(
+            channel=cfg.slack_channel_id,
+            text=text,
+        )
+
+
+def handle_early_group_revocation(  # noqa: PLR0913
+    group_assignment: sso.GroupAssignment,
+    schedule_name: str,
+    revoker_slack_id: str,
+    requester_slack_id: str,
+    reason: str | None,
+    sso_client: SSOAdminClient,
+    scheduler_client: EventBridgeSchedulerClient,
+    slack_client: slack_sdk.WebClient,
+    identitystore_client: IdentityStoreClient,
+    cfg: config.Config,
+    thread_ts: str | None = None,
+) -> SlackResponse | None:
+    """Handle early revocation of group access.
+
+    Order of operations:
+    1. Remove user from group FIRST
+    2. Delete schedule
+    3. Log to S3 audit trail
+    4. Post confirmation to thread
+    """
+    logger.info("Handling early group revocation", extra={"schedule_name": schedule_name})
+
+    # 1. Remove user from group first
+    try:
+        sso.remove_user_from_group(
+            group_assignment.identity_store_id,
+            group_assignment.membership_id,
+            identitystore_client,
+        )
+    except Exception as e:
+        logger.error("Failed to remove user from group during early revocation", extra={"error": str(e)})
+        raise
+
+    # 2. Delete the scheduled revocation
+    schedule.delete_schedule(scheduler_client, schedule_name)
+
+    # 3. Log to S3 audit trail
+    revoker = slack_helpers.get_user(slack_client, id=revoker_slack_id)
+    requester = slack_helpers.get_user(slack_client, id=requester_slack_id)
+
+    s3.log_operation(
+        audit_entry=s3.AuditEntry(
+            group_name=group_assignment.group_name,
+            group_id=group_assignment.group_id,
+            reason=reason or "early_revocation",
+            requester_slack_id=requester.id,
+            requester_email=requester.email,
+            approver_slack_id=revoker.id,
+            approver_email=revoker.email,
+            operation_type="early_revoke",
+            permission_duration="NA",
+            sso_user_principal_id=group_assignment.user_principal_id,
+            audit_entry_type="group",
+        ),
+    )
+
+    # 4. Update header and post confirmation to thread
+    if cfg.post_update_to_slack and thread_ts:
+        # Update the original message header to ACCESS ENDED
+        message = slack_helpers.get_message_from_timestamp(
+            channel_id=cfg.slack_channel_id,
+            message_ts=thread_ts,
+            slack_client=slack_client,
+        )
+        if message:
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
+                blocks=message["blocks"],
+                status_text=cfg.access_ended_status,
+            )
+            slack_client.chat_update(
+                channel=cfg.slack_channel_id,
+                ts=thread_ts,
+                blocks=blocks,
+                text="Access ended",
+            )
+
+        reason_text = f" Reason: {reason}" if reason else ""
+        text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
+        return slack_client.chat_postMessage(
+            channel=cfg.slack_channel_id,
+            text=text,
+            thread_ts=thread_ts,
+        )
+    elif cfg.post_update_to_slack:
+        # Full message when not in a thread
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=group_assignment.user_principal_id,
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identitystore_client,
+            slack_client=slack_client,
+        )
+        reason_text = f" Reason: {reason}" if reason else ""
+        text = f"<@{revoker_slack_id}> ended the session early for {mention} (group {group_assignment.group_name}).{reason_text}"
+        return slack_client.chat_postMessage(
+            channel=cfg.slack_channel_id,
+            text=text,
+        )
+
+
 def handle_account_assignment_deletion(  # noqa: PLR0913
     account_assignment: sso.UserAccountAssignment,
     cfg: config.Config,
@@ -184,20 +394,43 @@ def slack_notify_user_on_revoke(  # noqa: PLR0913
     slack_client: slack_sdk.WebClient,
     thread_ts: str | None = None,
 ) -> SlackResponse:
-    mention = slack_helpers.create_slack_mention_by_principal_id(
-        sso_user_id=(
-            account_assignment.principal_id
-            if isinstance(account_assignment, sso.AccountAssignment)
-            else account_assignment.user_principal_id
-        ),
-        sso_client=sso_client,
-        cfg=cfg,
-        identitystore_client=identitystore_client,
-        slack_client=slack_client,
-    )
+    if thread_ts:
+        # Update the original message header to ACCESS ENDED
+        message = slack_helpers.get_message_from_timestamp(
+            channel_id=cfg.slack_channel_id,
+            message_ts=thread_ts,
+            slack_client=slack_client,
+        )
+        if message:
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
+                blocks=message["blocks"],
+                status_text=cfg.access_ended_status,
+            )
+            slack_client.chat_update(
+                channel=cfg.slack_channel_id,
+                ts=thread_ts,
+                blocks=blocks,
+                text="Access ended",
+            )
+        # Simplified message for threads (context already in thread)
+        text = "Access revoked."
+    else:
+        # Full message when not in a thread
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=(
+                account_assignment.principal_id
+                if isinstance(account_assignment, sso.AccountAssignment)
+                else account_assignment.user_principal_id
+            ),
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identitystore_client,
+            slack_client=slack_client,
+        )
+        text = f"Revoked role {permission_set.name} for user {mention} in account {account.name}"
     return slack_client.chat_postMessage(
         channel=cfg.slack_channel_id,
-        text=f"Revoked role {permission_set.name} for user {mention} in account {account.name}",
+        text=text,
         thread_ts=thread_ts,
     )
 
@@ -210,16 +443,39 @@ def slack_notify_user_on_group_access_revoke(  # noqa: PLR0913
     slack_client: slack_sdk.WebClient,
     thread_ts: str | None = None,
 ) -> SlackResponse:
-    mention = slack_helpers.create_slack_mention_by_principal_id(
-        sso_user_id=group_assignment.user_principal_id,
-        sso_client=sso_client,
-        cfg=cfg,
-        identitystore_client=identitystore_client,
-        slack_client=slack_client,
-    )
+    if thread_ts:
+        # Update the original message header to ACCESS ENDED
+        message = slack_helpers.get_message_from_timestamp(
+            channel_id=cfg.slack_channel_id,
+            message_ts=thread_ts,
+            slack_client=slack_client,
+        )
+        if message:
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
+                blocks=message["blocks"],
+                status_text=cfg.access_ended_status,
+            )
+            slack_client.chat_update(
+                channel=cfg.slack_channel_id,
+                ts=thread_ts,
+                blocks=blocks,
+                text="Access ended",
+            )
+        # Simplified message for threads (context already in thread)
+        text = "Access revoked."
+    else:
+        # Full message when not in a thread
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=group_assignment.user_principal_id,
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identitystore_client,
+            slack_client=slack_client,
+        )
+        text = f"User {mention} has been removed from the group {group_assignment.group_name}."
     return slack_client.chat_postMessage(
         channel=cfg.slack_channel_id,
-        text=f"User {mention} has been removed from the group {group_assignment.group_name}.",
+        text=text,
         thread_ts=thread_ts,
     )
 
@@ -236,10 +492,29 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
     logger.info("Handling scheduled account assignment deletion", extra={"revoke_event": revoke_event})
 
     user_account_assignment = revoke_event.user_account_assignment
-    assignment_status = sso.delete_account_assignment_and_wait_for_result(
-        sso_client,
-        user_account_assignment,
-    )
+
+    # Handle idempotency: assignment may have already been deleted by early revoke
+    try:
+        assignment_status = sso.delete_account_assignment_and_wait_for_result(
+            sso_client,
+            user_account_assignment,
+        )
+    except Exception as e:
+        error_code = getattr(getattr(e, "response", {}), "get", lambda *_: None)("Error", {}).get("Code")
+        # Check for botocore ClientError
+        if hasattr(e, "response"):
+            import jmespath as jp
+
+            error_code = jp.search("Error.Code", e.response)
+        if error_code == "ConflictException":
+            logger.warning(
+                "Account assignment already deleted (likely by early revoke), skipping",
+                extra={"revoke_event": revoke_event},
+            )
+            schedule.delete_schedule(scheduler_client, revoke_event.schedule_name)
+            return None
+        raise
+
     permission_set = sso.describe_permission_set(
         sso_client,
         sso_instance_arn=user_account_assignment.instance_arn,
@@ -288,7 +563,25 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
 ) -> SlackResponse | None:
     logger.info("Handling scheduled group access revokation", extra={"revoke_event": group_revoke_event})
     group_assignment = group_revoke_event.group_assignment
-    sso.remove_user_from_group(group_assignment.identity_store_id, group_assignment.membership_id, identitystore_client)
+
+    # Handle idempotency: membership may have already been deleted by early revoke
+    try:
+        sso.remove_user_from_group(group_assignment.identity_store_id, group_assignment.membership_id, identitystore_client)
+    except Exception as e:
+        error_code = None
+        if hasattr(e, "response"):
+            import jmespath as jp
+
+            error_code = jp.search("Error.Code", e.response)
+        if error_code == "ResourceNotFoundException":
+            logger.warning(
+                "Group membership already deleted (likely by early revoke), skipping",
+                extra={"group_revoke_event": group_revoke_event},
+            )
+            schedule.delete_schedule(scheduler_client, group_revoke_event.schedule_name)
+            return None
+        raise
+
     s3.log_operation(
         audit_entry=s3.AuditEntry(
             group_name=group_assignment.group_name,
@@ -552,9 +845,9 @@ def handle_discard_buttons_event(
                     ),
                 )
             )
-            blocks = slack_helpers.HeaderSectionBlock.set_color_coding(
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
                 blocks=blocks,
-                color_coding_emoji=cfg.discarded_result_emoji,
+                status_text=cfg.timed_out_status,
             )
 
             slack_client.chat_update(
