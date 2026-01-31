@@ -613,6 +613,13 @@ def handle_early_revoke_button_click(body: dict, client: WebClient, context: Bol
     channel_id = jp.search("channel.id", body)
     thread_ts = jp.search("message.thread_ts", body) or jp.search("message.ts", body)
 
+    logger.info(
+        "Early revoke button context",
+        extra={"thread_ts": thread_ts, "channel_id": channel_id, "clicker_slack_id": clicker_slack_id},
+    )
+    if not thread_ts:
+        logger.warning("Could not extract thread_ts from button click body")
+
     # Parse the button value
     button_value = jp.search("actions[0].value", body)
     try:
