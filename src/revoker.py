@@ -352,20 +352,26 @@ def slack_notify_user_on_revoke(  # noqa: PLR0913
     slack_client: slack_sdk.WebClient,
     thread_ts: str | None = None,
 ) -> SlackResponse:
-    mention = slack_helpers.create_slack_mention_by_principal_id(
-        sso_user_id=(
-            account_assignment.principal_id
-            if isinstance(account_assignment, sso.AccountAssignment)
-            else account_assignment.user_principal_id
-        ),
-        sso_client=sso_client,
-        cfg=cfg,
-        identitystore_client=identitystore_client,
-        slack_client=slack_client,
-    )
+    if thread_ts:
+        # Simplified message for threads (context already in thread)
+        text = "Access revoked."
+    else:
+        # Full message when not in a thread
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=(
+                account_assignment.principal_id
+                if isinstance(account_assignment, sso.AccountAssignment)
+                else account_assignment.user_principal_id
+            ),
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identitystore_client,
+            slack_client=slack_client,
+        )
+        text = f"Revoked role {permission_set.name} for user {mention} in account {account.name}"
     return slack_client.chat_postMessage(
         channel=cfg.slack_channel_id,
-        text=f"Revoked role {permission_set.name} for user {mention} in account {account.name}",
+        text=text,
         thread_ts=thread_ts,
     )
 
@@ -378,16 +384,22 @@ def slack_notify_user_on_group_access_revoke(  # noqa: PLR0913
     slack_client: slack_sdk.WebClient,
     thread_ts: str | None = None,
 ) -> SlackResponse:
-    mention = slack_helpers.create_slack_mention_by_principal_id(
-        sso_user_id=group_assignment.user_principal_id,
-        sso_client=sso_client,
-        cfg=cfg,
-        identitystore_client=identitystore_client,
-        slack_client=slack_client,
-    )
+    if thread_ts:
+        # Simplified message for threads (context already in thread)
+        text = "Access revoked."
+    else:
+        # Full message when not in a thread
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=group_assignment.user_principal_id,
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identitystore_client,
+            slack_client=slack_client,
+        )
+        text = f"User {mention} has been removed from the group {group_assignment.group_name}."
     return slack_client.chat_postMessage(
         channel=cfg.slack_channel_id,
-        text=f"User {mention} has been removed from the group {group_assignment.group_name}.",
+        text=text,
         thread_ts=thread_ts,
     )
 
