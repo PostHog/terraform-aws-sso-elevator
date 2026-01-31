@@ -115,6 +115,7 @@ class RequestForAccessView:
         sorted_accounts = sorted(accounts, key=lambda account: account.name)
         return InputBlock(
             block_id=cls.ACCOUNT_BLOCK_ID,
+            dispatch_action=True,
             label=PlainTextObject(text="AWS Account"),
             element=StaticSelectElement(
                 action_id=cls.ACCOUNT_ACTION_ID,
