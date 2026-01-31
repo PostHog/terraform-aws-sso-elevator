@@ -162,7 +162,10 @@ data "aws_iam_policy_document" "slack_handler" {
     effect = "Allow"
     actions = [
       "sso:CreateAccountAssignment",
-      "sso:DescribeAccountAssignmentCreationStatus"
+      "sso:DescribeAccountAssignmentCreationStatus",
+      # required for early revocation
+      "sso:DeleteAccountAssignment",
+      "sso:DescribeAccountAssignmentDeletionStatus"
     ]
     resources = [
       "arn:aws:sso:::instance/*",
