@@ -511,10 +511,33 @@ def get_max_duration_block(cfg: config.Config) -> list[Option]:
             elements = elements[:99] + elements[-1:]
         return [Option(text=PlainTextObject(text=s), value=s) for s in elements]
     else:
-        max_increments = min(cfg.max_permissions_duration_time * 2, 99)
+        base_durations = [0.25, 0.5, 1, 2, 4, 8, 12, 24]  # hours
+        max_hours = cfg.max_permissions_duration_time
+
+        # Filter to max, add max if not present
+        durations = [d for d in base_durations if d <= max_hours]
+        if max_hours not in durations:
+            durations.append(max_hours)
+            durations.sort()
+
+        def format_display(hours: float) -> str:
+            """Human-readable: '15 min', '1 hour', '2 hours'"""
+            if hours < 1:
+                return f"{int(hours * 60)} min"
+            elif hours == 1:
+                return "1 hour"
+            else:
+                return f"{int(hours)} hours"
+
+        def format_value(hours: float) -> str:
+            """HH:MM for backend parsing"""
+            h = int(hours)
+            m = int((hours - h) * 60)
+            return f"{h:02d}:{m:02d}"
+
         return [
-            Option(text=PlainTextObject(text=f"{i // 2:02d}:{(i % 2) * 30:02d}"), value=f"{i // 2:02d}:{(i % 2) * 30:02d}")
-            for i in range(1, max_increments + 1)
+            Option(text=PlainTextObject(text=format_display(d)), value=format_value(d))
+            for d in durations
         ]
 
 
