@@ -172,6 +172,7 @@ class RequestForAccessView:
     @classmethod
     def update_with_permission_sets(cls, view_blocks: list, permission_sets: list[entities.aws.PermissionSet]) -> View:
         view = cls.build()
+        view.submit_disabled = False
         # Start from the current blocks, remove placeholder
         blocks = remove_blocks(view_blocks, block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID])
         # Insert permission set dropdown after account dropdown
