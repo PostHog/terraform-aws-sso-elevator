@@ -55,7 +55,7 @@ def determine_affected_statements(
     raise TypeError("Statements contain mixed or unsupported types.")
 
 
-def make_decision_on_access_request(  # noqa: PLR0911
+def make_decision_on_access_request(  # noqa: PLR0911, PLR0913
     statements: FrozenSet[Statement] | FrozenSet[GroupStatement],
     requester_email: str,
     permission_set_name: str | None = None,
