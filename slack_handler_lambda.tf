@@ -141,7 +141,12 @@ data "aws_iam_policy_document" "slack_handler" {
       "lambda:InvokeFunction",
       "lambda:GetFunction"
     ]
-    resources = [local.requester_lambda_arn]
+    # Include both qualified (:live alias) and unqualified ARN for lazy listener self-invocation
+    # when provisioned concurrency is enabled
+    resources = distinct([
+      local.requester_lambda_arn,
+      "arn:aws:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.requester_lambda_name}"
+    ])
   }
   statement {
     effect = "Allow"
