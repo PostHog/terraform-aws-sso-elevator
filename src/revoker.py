@@ -10,6 +10,7 @@ from mypy_boto3_sso_admin import SSOAdminClient
 from pydantic import ValidationError
 from slack_sdk.web.slack_response import SlackResponse
 
+import analytics
 import config
 import entities
 import organizations
@@ -185,6 +186,18 @@ def handle_early_account_revocation(  # noqa: PLR0913
             sso_user_principal_id=user_account_assignment.user_principal_id,
             audit_entry_type="account",
         ),
+    )
+
+    analytics.capture(
+        event="aws_access_revoked_early",
+        distinct_id=requester.email,
+        properties={
+            "account_id": user_account_assignment.account_id,
+            "permission_set": permission_set.name,
+            "revoker_email": revoker.email,
+            "requester_email": requester.email,
+            "reason": reason or "",
+        },
     )
 
     # 4. Update header and post confirmation to thread

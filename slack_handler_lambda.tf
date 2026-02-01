@@ -43,36 +43,42 @@ module "access_requester_slack_handler" {
     module.sso_elevator_dependencies[0].lambda_layer_arn,
   ]
 
-  environment_variables = {
-    LOG_LEVEL = var.log_level
+  environment_variables = merge(
+    {
+      LOG_LEVEL = var.log_level
 
-    SLACK_SIGNING_SECRET = var.slack_signing_secret
-    SLACK_BOT_TOKEN      = var.slack_bot_token
-    SLACK_CHANNEL_ID     = var.slack_channel_id
-    SCHEDULE_GROUP_NAME  = var.schedule_group_name
+      SLACK_SIGNING_SECRET = var.slack_signing_secret
+      SLACK_BOT_TOKEN      = var.slack_bot_token
+      SLACK_CHANNEL_ID     = var.slack_channel_id
+      SCHEDULE_GROUP_NAME  = var.schedule_group_name
 
-    POST_UPDATE_TO_SLACK = var.revoker_post_update_to_slack
+      POST_UPDATE_TO_SLACK = var.revoker_post_update_to_slack
 
-    SSO_INSTANCE_ARN                            = local.sso_instance_arn
-    POWERTOOLS_LOGGER_LOG_EVENT                 = true
-    SCHEDULE_POLICY_ARN                         = aws_iam_role.eventbridge_role.arn
-    REVOKER_FUNCTION_ARN                        = local.revoker_lambda_arn
-    REVOKER_FUNCTION_NAME                       = var.revoker_lambda_name
-    S3_BUCKET_FOR_AUDIT_ENTRY_NAME              = local.s3_bucket_name
-    S3_BUCKET_PREFIX_FOR_PARTITIONS             = var.s3_bucket_partition_prefix
-    SSO_ELEVATOR_SCHEDULED_REVOCATION_RULE_NAME = aws_cloudwatch_event_rule.sso_elevator_scheduled_revocation.name
-    REQUEST_EXPIRATION_HOURS                    = var.request_expiration_hours
-    APPROVER_RENOTIFICATION_INITIAL_WAIT_TIME   = var.approver_renotification_initial_wait_time
-    APPROVER_RENOTIFICATION_BACKOFF_MULTIPLIER  = var.approver_renotification_backoff_multiplier
-    MAX_PERMISSIONS_DURATION_TIME               = var.max_permissions_duration_time
-    PERMISSION_DURATION_LIST_OVERRIDE           = jsonencode(var.permission_duration_list_override)
-    SECONDARY_FALLBACK_EMAIL_DOMAINS            = jsonencode(var.secondary_fallback_email_domains)
-    SEND_DM_IF_USER_NOT_IN_CHANNEL              = var.send_dm_if_user_not_in_channel
-    ALLOW_ANYONE_TO_END_SESSION_EARLY           = var.allow_anyone_to_end_session_early
-    CONFIG_BUCKET_NAME                          = local.config_bucket_name
-    CONFIG_S3_KEY                               = "config/approval-config.json"
-    CACHE_ENABLED                               = var.cache_enabled
-  }
+      SSO_INSTANCE_ARN                            = local.sso_instance_arn
+      POWERTOOLS_LOGGER_LOG_EVENT                 = true
+      SCHEDULE_POLICY_ARN                         = aws_iam_role.eventbridge_role.arn
+      REVOKER_FUNCTION_ARN                        = local.revoker_lambda_arn
+      REVOKER_FUNCTION_NAME                       = var.revoker_lambda_name
+      S3_BUCKET_FOR_AUDIT_ENTRY_NAME              = local.s3_bucket_name
+      S3_BUCKET_PREFIX_FOR_PARTITIONS             = var.s3_bucket_partition_prefix
+      SSO_ELEVATOR_SCHEDULED_REVOCATION_RULE_NAME = aws_cloudwatch_event_rule.sso_elevator_scheduled_revocation.name
+      REQUEST_EXPIRATION_HOURS                    = var.request_expiration_hours
+      APPROVER_RENOTIFICATION_INITIAL_WAIT_TIME   = var.approver_renotification_initial_wait_time
+      APPROVER_RENOTIFICATION_BACKOFF_MULTIPLIER  = var.approver_renotification_backoff_multiplier
+      MAX_PERMISSIONS_DURATION_TIME               = var.max_permissions_duration_time
+      PERMISSION_DURATION_LIST_OVERRIDE           = jsonencode(var.permission_duration_list_override)
+      SECONDARY_FALLBACK_EMAIL_DOMAINS            = jsonencode(var.secondary_fallback_email_domains)
+      SEND_DM_IF_USER_NOT_IN_CHANNEL              = var.send_dm_if_user_not_in_channel
+      ALLOW_ANYONE_TO_END_SESSION_EARLY           = var.allow_anyone_to_end_session_early
+      CONFIG_BUCKET_NAME                          = local.config_bucket_name
+      CONFIG_S3_KEY                               = "config/approval-config.json"
+      CACHE_ENABLED                               = var.cache_enabled
+    },
+    var.posthog_api_key != "" ? {
+      POSTHOG_API_KEY = var.posthog_api_key
+      POSTHOG_HOST    = var.posthog_host
+    } : {}
+  )
 
   # Only create API Gateway trigger on base function when provisioned concurrency is disabled.
   # When enabled, the alias module creates the trigger instead.
@@ -141,7 +147,12 @@ data "aws_iam_policy_document" "slack_handler" {
       "lambda:InvokeFunction",
       "lambda:GetFunction"
     ]
-    resources = [local.requester_lambda_arn]
+    # Include both qualified (:live alias) and unqualified ARN for lazy listener self-invocation
+    # when provisioned concurrency is enabled
+    resources = distinct([
+      local.requester_lambda_arn,
+      "arn:aws:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.requester_lambda_name}"
+    ])
   }
   statement {
     effect = "Allow"
@@ -218,6 +229,7 @@ data "aws_iam_policy_document" "slack_handler" {
       "identitystore:ListGroups",
       "identitystore:DescribeGroup",
       "identitystore:ListGroupMemberships",
+      "identitystore:ListGroupMembershipsForMember",
       "identitystore:CreateGroupMembership",
     ]
     resources = ["*"]

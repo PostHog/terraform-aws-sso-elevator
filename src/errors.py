@@ -4,6 +4,7 @@ from aws_lambda_powertools import Logger
 from slack_bolt import BoltContext
 from slack_sdk import WebClient
 
+import analytics
 import config
 
 
@@ -26,6 +27,15 @@ cfg = config.get_config()
 def error_handler(client: WebClient, e: Exception, logger: Logger, context: BoltContext, cfg: config.Config) -> None:
     logger.exception("An error occurred:", exc_info=e)
     user_id = context.get("user_id", "UNKNOWN_USER")
+
+    analytics.capture(
+        event="aws_sso_elevator_error",
+        distinct_id=user_id,
+        properties={
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+        },
+    )
 
     if isinstance(e, SSOUserNotFound):
         text = (
