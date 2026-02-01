@@ -9,6 +9,7 @@ from slack_sdk import WebClient
 from slack_sdk.web.slack_response import SlackResponse
 
 import access_control
+import analytics
 import config
 import entities
 import group
@@ -273,6 +274,17 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
             text=text,
         )
 
+        analytics.capture(
+            event="aws_access_denied",
+            distinct_id=requester.email,
+            properties={
+                "account_id": payload.request.account_id,
+                "permission_set": payload.request.permission_set_name,
+                "approver_email": approver.email,
+                "requester_email": requester.email,
+            },
+        )
+
         cache_for_dublicate_requests.clear()
         if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
             logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")
@@ -328,6 +340,21 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
         reason=payload.request.reason,
         thread_ts=payload.thread_ts,
     )
+
+    if result.granted:
+        analytics.capture(
+            event="aws_access_approved",
+            distinct_id=requester.email,
+            properties={
+                "account_id": payload.request.account_id,
+                "permission_set": payload.request.permission_set_name,
+                "approver_email": approver.email,
+                "requester_email": requester.email,
+                "duration_hours": payload.request.permission_duration.total_seconds() / 3600,
+                "self_approved": approver.email == requester.email,
+            },
+        )
+
     cache_for_dublicate_requests.clear()
     if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
         logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")
@@ -409,6 +436,18 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
         user_group_ids=user_group_ids,
     )
     logger.info("Decision on request was made", extra={"decision": decision.dict()})
+
+    analytics.capture(
+        event="aws_access_requested",
+        distinct_id=requester.email,
+        properties={
+            "account_id": request.account_id,
+            "permission_set": request.permission_set_name,
+            "requester_email": requester.email,
+            "decision_reason": decision.reason.value,
+            "granted": decision.grant,
+        },
+    )
 
     try:
         account = organizations.describe_account(org_client, request.account_id)
@@ -531,6 +570,19 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
     )
 
     if result.granted:
+        analytics.capture(
+            event="aws_access_approved",
+            distinct_id=requester.email,
+            properties={
+                "account_id": request.account_id,
+                "permission_set": request.permission_set_name,
+                "approver_email": requester.email,
+                "requester_email": requester.email,
+                "duration_hours": request.permission_duration.total_seconds() / 3600,
+                "self_approved": True,
+            },
+        )
+
         client.chat_postMessage(
             channel=cfg.slack_channel_id,
             text=f"Permissions granted to <@{requester.id}>",

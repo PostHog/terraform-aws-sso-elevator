@@ -10,6 +10,7 @@ from slack_sdk import WebClient
 from slack_sdk.web.slack_response import SlackResponse
 
 import access_control
+import analytics
 import config
 import entities
 import schedule
@@ -46,6 +47,17 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
         cfg.group_statements,
         requester_email=requester.email,
         group_id=request.group_id,
+    )
+
+    analytics.capture(
+        event="aws_group_access_requested",
+        distinct_id=requester.email,
+        properties={
+            "group_id": request.group_id,
+            "group_name": group.name,
+            "requester_email": requester.email,
+            "decision_reason": decision.reason.value,
+        },
     )
 
     show_buttons = bool(decision.approvers)
@@ -142,6 +154,19 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
     )
 
     if result.granted:
+        analytics.capture(
+            event="aws_group_access_approved",
+            distinct_id=requester.email,
+            properties={
+                "group_id": request.group_id,
+                "group_name": group.name,
+                "approver_email": requester.email,
+                "requester_email": requester.email,
+                "duration_hours": request.permission_duration.total_seconds() / 3600,
+                "self_approved": True,
+            },
+        )
+
         client.chat_postMessage(
             channel=cfg.slack_channel_id,
             text=f"Permissions granted to <@{requester.id}>",
@@ -271,6 +296,21 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
         identity_store_id=identity_store_id,
         thread_ts=payload.thread_ts,
     )
+
+    if result.granted:
+        analytics.capture(
+            event="aws_group_access_approved",
+            distinct_id=requester.email,
+            properties={
+                "group_id": payload.request.group_id,
+                "group_name": group.name,
+                "approver_email": approver.email,
+                "requester_email": requester.email,
+                "duration_hours": payload.request.permission_duration.total_seconds() / 3600,
+                "self_approved": approver.email == requester.email,
+            },
+        )
+
     cache_for_dublicate_requests.clear()
     if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
         logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")

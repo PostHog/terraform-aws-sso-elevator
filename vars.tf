@@ -472,3 +472,20 @@ variable "slack_handler_provisioned_concurrent_executions" {
   type        = number
   default     = -1
 }
+
+# ==========================================
+# PostHog Analytics Variables
+# ==========================================
+
+variable "posthog_api_key" {
+  description = "PostHog API key for analytics. Leave empty to disable analytics tracking."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "posthog_host" {
+  description = "PostHog host URL for analytics."
+  type        = string
+  default     = "https://us.i.posthog.com"
+}

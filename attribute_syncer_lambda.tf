@@ -48,26 +48,32 @@ module "attribute_syncer" {
     module.sso_elevator_dependencies[0].lambda_layer_arn,
   ]
 
-  environment_variables = {
-    LOG_LEVEL = var.log_level
+  environment_variables = merge(
+    {
+      LOG_LEVEL = var.log_level
 
-    SLACK_BOT_TOKEN  = var.slack_bot_token
-    SLACK_CHANNEL_ID = var.slack_channel_id
+      SLACK_BOT_TOKEN  = var.slack_bot_token
+      SLACK_CHANNEL_ID = var.slack_channel_id
 
-    SSO_INSTANCE_ARN            = local.sso_instance_arn
-    IDENTITY_STORE_ID           = local.identity_store_id
-    POWERTOOLS_LOGGER_LOG_EVENT = true
+      SSO_INSTANCE_ARN            = local.sso_instance_arn
+      IDENTITY_STORE_ID           = local.identity_store_id
+      POWERTOOLS_LOGGER_LOG_EVENT = true
 
-    S3_BUCKET_FOR_AUDIT_ENTRY_NAME  = local.s3_bucket_name
-    S3_BUCKET_PREFIX_FOR_PARTITIONS = var.s3_bucket_partition_prefix
+      S3_BUCKET_FOR_AUDIT_ENTRY_NAME  = local.s3_bucket_name
+      S3_BUCKET_PREFIX_FOR_PARTITIONS = var.s3_bucket_partition_prefix
 
-    # Attribute sync specific configuration
-    ATTRIBUTE_SYNC_ENABLED                  = "true"
-    ATTRIBUTE_SYNC_MANAGED_GROUPS           = jsonencode(var.attribute_sync_managed_groups)
-    ATTRIBUTE_SYNC_RULES                    = jsonencode(var.attribute_sync_rules)
-    ATTRIBUTE_SYNC_MANUAL_ASSIGNMENT_POLICY = var.attribute_sync_manual_assignment_policy
-    ATTRIBUTE_SYNC_SCHEDULE                 = var.attribute_sync_schedule
-  }
+      # Attribute sync specific configuration
+      ATTRIBUTE_SYNC_ENABLED                  = "true"
+      ATTRIBUTE_SYNC_MANAGED_GROUPS           = jsonencode(var.attribute_sync_managed_groups)
+      ATTRIBUTE_SYNC_RULES                    = jsonencode(var.attribute_sync_rules)
+      ATTRIBUTE_SYNC_MANUAL_ASSIGNMENT_POLICY = var.attribute_sync_manual_assignment_policy
+      ATTRIBUTE_SYNC_SCHEDULE                 = var.attribute_sync_schedule
+    },
+    var.posthog_api_key != "" ? {
+      POSTHOG_API_KEY = var.posthog_api_key
+      POSTHOG_HOST    = var.posthog_host
+    } : {}
+  )
 
   allowed_triggers = {
     attribute_sync_schedule = {
