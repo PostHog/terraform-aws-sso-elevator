@@ -24,6 +24,7 @@ class BaseStatement(BaseModel):
     allow_self_approval: bool | None = None
     approval_is_not_required: bool | None = None
     approvers: FrozenSet[EmailStr] = Field(default_factory=frozenset)
+    required_group_membership: FrozenSet[str] = Field(default_factory=frozenset)
 
 
 class Statement(BaseStatement):
@@ -49,6 +50,48 @@ def get_permission_sets_for_account(statements: FrozenSet[Statement], account_id
                 return {"*"}
             permission_sets.update(statement.permission_set)
     return permission_sets
+
+
+def is_statement_eligible_for_user(statement: BaseStatement, user_group_ids: set[str]) -> bool:
+    """Check if user is eligible for a statement based on group membership.
+
+    If required_group_membership is empty, statement is available to all (backwards compatible).
+    Otherwise, user must be in at least one of the required groups.
+    """
+    if not statement.required_group_membership:
+        return True
+    return bool(statement.required_group_membership & user_group_ids)
+
+
+def get_eligible_statements_for_user(statements: FrozenSet[Statement], user_group_ids: set[str]) -> FrozenSet[Statement]:
+    """Filter statements to only those the user is eligible for based on group membership."""
+    return frozenset(s for s in statements if is_statement_eligible_for_user(s, user_group_ids))
+
+
+def get_accounts_for_user(statements: FrozenSet[Statement], user_group_ids: set[str]) -> set[str]:
+    """Return account IDs the user can request access to based on eligible statements."""
+    eligible_statements = get_eligible_statements_for_user(statements, user_group_ids)
+    accounts: set[str] = set()
+    for statement in eligible_statements:
+        if "*" in statement.resource:
+            return {"*"}
+        accounts.update(statement.resource)
+    return accounts
+
+
+def get_permission_sets_for_account_and_user(statements: FrozenSet[Statement], account_id: str, user_group_ids: set[str]) -> set[str]:
+    """Return permission set names valid for given account and user based on eligible statements.
+
+    Args:
+        statements: The statements to evaluate.
+        account_id: The AWS account ID to filter for.
+        user_group_ids: The set of SSO group IDs the user belongs to.
+            Unlike make_decision_on_access_request, this always filters by group membership.
+            Pass an empty set if group IDs are unavailable; only statements without
+            required_group_membership will match (secure default).
+    """
+    eligible_statements = get_eligible_statements_for_user(statements, user_group_ids)
+    return get_permission_sets_for_account(eligible_statements, account_id)
 
 
 class OUStatement(BaseStatement):

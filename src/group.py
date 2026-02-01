@@ -29,7 +29,7 @@ identity_store_id = sso_instance.identity_store_id
 
 
 @handle_errors
-def handle_request_for_group_access_submittion(
+def handle_request_for_group_access_submittion(  # noqa: PLR0915
     body: dict,
     ack: Ack,  # noqa: ARG001
     client: WebClient,

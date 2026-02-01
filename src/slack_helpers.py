@@ -192,6 +192,36 @@ class RequestForAccessView:
         )
 
     @classmethod
+    def build_no_eligible_accounts_block(cls) -> SectionBlock:
+        return SectionBlock(
+            block_id="no_eligible_accounts",
+            text=MarkdownTextObject(
+                text=":x: You don't have access to request any accounts. Contact your admin if you believe this is an error."
+            ),
+        )
+
+    @classmethod
+    def build_no_eligible_accounts_view(cls) -> View:
+        """Build view with warning when user has no eligible accounts."""
+        return View(
+            type="modal",
+            callback_id=cls.CALLBACK_ID,
+            submit=PlainTextObject(text="Request"),
+            submit_disabled=True,
+            close=PlainTextObject(text="Cancel"),
+            title=PlainTextObject(text="Request AWS Access"),
+            blocks=[
+                cls.build_no_eligible_accounts_block(),
+                DividerBlock(),
+                SectionBlock(
+                    text=MarkdownTextObject(
+                        text="All AWS API calls are logged for security compliance.",
+                    ),
+                ),
+            ],
+        )
+
+    @classmethod
     def build_no_permission_sets_view(cls, view_blocks: list) -> View:
         """Build view with warning and disabled submit button."""
         view = cls.build()
@@ -350,9 +380,7 @@ class HeaderSectionBlock:
 
     @classmethod
     def new(cls, status_text: str) -> SectionBlock:
-        return SectionBlock(
-            block_id=cls.block_id, text=MarkdownTextObject(text=status_text)
-        )
+        return SectionBlock(block_id=cls.block_id, text=MarkdownTextObject(text=status_text))
 
     @staticmethod
     def set_status(blocks: list[dict], status_text: str) -> list[dict]:
@@ -552,10 +580,7 @@ def get_max_duration_block(cfg: config.Config) -> list[Option]:
             m = int((hours - h) * 60)
             return f"{h:02d}:{m:02d}"
 
-        return [
-            Option(text=PlainTextObject(text=format_display(d)), value=format_value(d))
-            for d in durations
-        ]
+        return [Option(text=PlainTextObject(text=format_display(d)), value=format_value(d)) for d in durations]
 
 
 def find_approvers_in_slack(client: WebClient, approver_emails: list[str]) -> tuple[list[entities.slack.User], list[str]]:
@@ -635,7 +660,7 @@ class EarlyRevokeModal:
     REASON_ACTION_ID = "early_revoke_reason_input"
 
     @classmethod
-    def build(
+    def build(  # noqa: PLR0913
         cls,
         account_name: Optional[str] = None,
         account_id: Optional[str] = None,
