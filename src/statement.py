@@ -79,9 +79,7 @@ def get_accounts_for_user(statements: FrozenSet[Statement], user_group_ids: set[
     return accounts
 
 
-def get_permission_sets_for_account_and_user(
-    statements: FrozenSet[Statement], account_id: str, user_group_ids: set[str]
-) -> set[str]:
+def get_permission_sets_for_account_and_user(statements: FrozenSet[Statement], account_id: str, user_group_ids: set[str]) -> set[str]:
     """Return permission set names valid for given account and user based on eligible statements.
 
     Args:

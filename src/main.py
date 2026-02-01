@@ -611,9 +611,7 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
 
     if not valid_ps_names:
         view_id = body["view"]["id"]
-        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(
-            view_blocks=body["view"]["blocks"]
-        )
+        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
         return client.views_update(view_id=view_id, view=updated_view)
 
     if "*" in valid_ps_names:
@@ -625,9 +623,7 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
     # Handle case where filtered list is empty (configured names don't exist in SSO)
     if not permission_sets:
         view_id = body["view"]["id"]
-        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(
-            view_blocks=body["view"]["blocks"]
-        )
+        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
         return client.views_update(view_id=view_id, view=updated_view)
 
     view_id = body["view"]["id"]
@@ -725,11 +721,13 @@ def handle_early_revoke_button_click(body: dict, client: WebClient, context: Bol
         except Exception:
             account_name = button_payload.account_id
 
-        private_metadata = json.dumps({
-            "button_payload": button_payload.model_dump(mode="json"),
-            "channel_id": channel_id,
-            "thread_ts": thread_ts,
-        })
+        private_metadata = json.dumps(
+            {
+                "button_payload": button_payload.model_dump(mode="json"),
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+            }
+        )
 
         modal = slack_helpers.EarlyRevokeModal.build(
             account_name=account_name,
@@ -739,11 +737,13 @@ def handle_early_revoke_button_click(body: dict, client: WebClient, context: Bol
         )
     elif button_payload.group_id and button_payload.group_name:
         # Group access
-        private_metadata = json.dumps({
-            "button_payload": button_payload.model_dump(mode="json"),
-            "channel_id": channel_id,
-            "thread_ts": thread_ts,
-        })
+        private_metadata = json.dumps(
+            {
+                "button_payload": button_payload.model_dump(mode="json"),
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+            }
+        )
 
         modal = slack_helpers.EarlyRevokeModal.build(
             group_name=button_payload.group_name,

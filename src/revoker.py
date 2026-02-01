@@ -232,7 +232,9 @@ def handle_early_account_revocation(  # noqa: PLR0913
                 slack_client=slack_client,
             )
             reason_text = f" Reason: {reason}" if reason else ""
-            text = f"<@{revoker_slack_id}> ended the session early for {mention} (role {permission_set.name} in {account.name}).{reason_text}"
+            text = (
+                f"<@{revoker_slack_id}> ended the session early for {mention} (role {permission_set.name} in {account.name}).{reason_text}"
+            )
             return slack_client.chat_postMessage(
                 channel=cfg.slack_channel_id,
                 text=text,
@@ -581,7 +583,9 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
         try:
             account = organizations.describe_account(org_client, user_account_assignment.account_id)
         except Exception:
-            logger.warning("Failed to describe account, using account ID as fallback", extra={"account_id": user_account_assignment.account_id})
+            logger.warning(
+                "Failed to describe account, using account ID as fallback", extra={"account_id": user_account_assignment.account_id}
+            )
             account = entities.aws.Account(id=user_account_assignment.account_id, name=user_account_assignment.account_id)
         slack_notify_user_on_revoke(
             cfg=cfg,
@@ -678,7 +682,9 @@ def handle_check_on_inconsistency(  # noqa: PLR0913
             try:
                 account = organizations.describe_account(org_client, account_assignment.account_id)
             except Exception:
-                logger.warning("Failed to describe account, using account ID as fallback", extra={"account_id": account_assignment.account_id})
+                logger.warning(
+                    "Failed to describe account, using account ID as fallback", extra={"account_id": account_assignment.account_id}
+                )
                 account = entities.aws.Account(id=account_assignment.account_id, name=account_assignment.account_id)
             logger.warning("Found an inconsistent account assignment", extra={"account_assignment": account_assignment})
             mention = slack_helpers.create_slack_mention_by_principal_id(

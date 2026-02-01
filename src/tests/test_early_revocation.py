@@ -3,7 +3,6 @@
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 import slack_helpers
 from slack_helpers import EarlyRevokeButtonPayload, EarlyRevokeModal, EarlyRevokeModalPayload
@@ -143,28 +142,24 @@ class TestEarlyRevokeModalPayload:
             "user": {"id": "U67890"},
             "view": {
                 "state": {
-                    "values": {
-                        EarlyRevokeModal.REASON_BLOCK_ID: {
-                            EarlyRevokeModal.REASON_ACTION_ID: {
-                                "value": "Finished my task early"
-                            }
-                        }
-                    }
+                    "values": {EarlyRevokeModal.REASON_BLOCK_ID: {EarlyRevokeModal.REASON_ACTION_ID: {"value": "Finished my task early"}}}
                 },
-                "private_metadata": json.dumps({
-                    "button_payload": {
-                        "schedule_name": "revoker-2024-01-15-10-30-00",
-                        "requester_slack_id": "U12345",
-                        "account_id": "123456789012",
-                        "permission_set_name": "AdministratorAccess",
-                        "permission_set_arn": "arn:aws:sso:::permissionSet/ssoins-1234/ps-5678",
-                        "instance_arn": "arn:aws:sso:::instance/ssoins-1234",
-                        "user_principal_id": "user-principal-123",
-                        "approver_emails": [],
-                    },
-                    "channel_id": "C12345",
-                    "thread_ts": "1234567890.123456",
-                }),
+                "private_metadata": json.dumps(
+                    {
+                        "button_payload": {
+                            "schedule_name": "revoker-2024-01-15-10-30-00",
+                            "requester_slack_id": "U12345",
+                            "account_id": "123456789012",
+                            "permission_set_name": "AdministratorAccess",
+                            "permission_set_arn": "arn:aws:sso:::permissionSet/ssoins-1234/ps-5678",
+                            "instance_arn": "arn:aws:sso:::instance/ssoins-1234",
+                            "user_principal_id": "user-principal-123",
+                            "approver_emails": [],
+                        },
+                        "channel_id": "C12345",
+                        "thread_ts": "1234567890.123456",
+                    }
+                ),
             },
         }
 
@@ -182,25 +177,19 @@ class TestEarlyRevokeModalPayload:
         view_submission_body = {
             "user": {"id": "U67890"},
             "view": {
-                "state": {
-                    "values": {
-                        EarlyRevokeModal.REASON_BLOCK_ID: {
-                            EarlyRevokeModal.REASON_ACTION_ID: {
-                                "value": None
-                            }
-                        }
+                "state": {"values": {EarlyRevokeModal.REASON_BLOCK_ID: {EarlyRevokeModal.REASON_ACTION_ID: {"value": None}}}},
+                "private_metadata": json.dumps(
+                    {
+                        "button_payload": {
+                            "schedule_name": "revoker-2024-01-15-10-30-00",
+                            "requester_slack_id": "U12345",
+                            "user_principal_id": "user-principal-123",
+                            "approver_emails": [],
+                        },
+                        "channel_id": "C12345",
+                        "thread_ts": "1234567890.123456",
                     }
-                },
-                "private_metadata": json.dumps({
-                    "button_payload": {
-                        "schedule_name": "revoker-2024-01-15-10-30-00",
-                        "requester_slack_id": "U12345",
-                        "user_principal_id": "user-principal-123",
-                        "approver_emails": [],
-                    },
-                    "channel_id": "C12345",
-                    "thread_ts": "1234567890.123456",
-                }),
+                ),
             },
         }
 

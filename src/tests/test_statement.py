@@ -1,5 +1,3 @@
-import pytest
-
 from statement import (
     Statement,
     get_accounts_for_user,

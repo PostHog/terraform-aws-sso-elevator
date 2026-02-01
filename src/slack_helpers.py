@@ -380,9 +380,7 @@ class HeaderSectionBlock:
 
     @classmethod
     def new(cls, status_text: str) -> SectionBlock:
-        return SectionBlock(
-            block_id=cls.block_id, text=MarkdownTextObject(text=status_text)
-        )
+        return SectionBlock(block_id=cls.block_id, text=MarkdownTextObject(text=status_text))
 
     @staticmethod
     def set_status(blocks: list[dict], status_text: str) -> list[dict]:
@@ -582,10 +580,7 @@ def get_max_duration_block(cfg: config.Config) -> list[Option]:
             m = int((hours - h) * 60)
             return f"{h:02d}:{m:02d}"
 
-        return [
-            Option(text=PlainTextObject(text=format_display(d)), value=format_value(d))
-            for d in durations
-        ]
+        return [Option(text=PlainTextObject(text=format_display(d)), value=format_value(d)) for d in durations]
 
 
 def find_approvers_in_slack(client: WebClient, approver_emails: list[str]) -> tuple[list[entities.slack.User], list[str]]:
