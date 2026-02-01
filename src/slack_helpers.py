@@ -660,7 +660,7 @@ class EarlyRevokeModal:
     REASON_ACTION_ID = "early_revoke_reason_input"
 
     @classmethod
-    def build(
+    def build(  # noqa: PLR0913
         cls,
         account_name: Optional[str] = None,
         account_id: Optional[str] = None,

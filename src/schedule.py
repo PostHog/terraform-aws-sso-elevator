@@ -131,7 +131,7 @@ def event_bridge_schedule_after(td: timedelta) -> str:
     return f"at({(now + td).replace(microsecond=0).isoformat().replace('+00:00', '')})"
 
 
-def schedule_revoke_event(
+def schedule_revoke_event(  # noqa: PLR0913
     schedule_client: EventBridgeSchedulerClient,
     permission_duration: timedelta,
     approver: entities.slack.User,
@@ -177,7 +177,7 @@ def schedule_revoke_event(
     return result, schedule_name
 
 
-def schedule_group_revoke_event(
+def schedule_group_revoke_event(  # noqa: PLR0913
     schedule_client: EventBridgeSchedulerClient,
     permission_duration: timedelta,
     approver: entities.slack.User,
