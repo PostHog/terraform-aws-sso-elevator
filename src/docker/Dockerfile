@@ -3,7 +3,7 @@ FROM ghcr.io/astral-sh/uv:0.9.5 AS uv
 FROM public.ecr.aws/lambda/python:3.13
 
 # Patch OpenSSL FIPS provider vulnerability
-RUN dnf update -y openssl openssl-libs openssl-fips-provider && dnf clean all
+RUN dnf upgrade -y openssl openssl-libs openssl-fips-provider && dnf clean all
 
 # Copy uv from the official image
 COPY --from=uv /uv /bin/uv
