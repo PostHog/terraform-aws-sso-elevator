@@ -93,8 +93,8 @@ def build_initial_form_handler(
             client.chat_postMessage(
                 channel=cfg.slack_channel_id,
                 text=f"<@{body.get('user', {}).get('id') or 'UNKNOWN_USER'}>,"
-                "Your request for AWS permissions failed because SSO Elevator could not find your user in SSO."
-                "This often happens if your AWS SSO email differs from your Slack email."
+                "Your request for AWS permissions failed because SSO Elevator could not find your user in SSO. "
+                "This often happens if your AWS SSO email differs from your Slack email. "
                 "Please check the SSO Elevator logs for more details.",
             )
             raise
@@ -430,45 +430,14 @@ app.action(entities.ApproverAction.Deny.value)(
 )
 
 
-@handle_errors
-def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
-    body: dict,
-    ack: Ack,  # noqa: ARG001
+def _process_single_access_request(  # noqa: PLR0915, PLR0912
+    request: slack_helpers.RequestForAccess,
+    requester: entities.slack.User,
+    user_group_ids: set[str],
     client: WebClient,
-    context: BoltContext,  # noqa: ARG001
-) -> SlackResponse | None:
-    logger.info("Handling request for access submission")
-    request = slack_helpers.RequestForAccessView.parse(body)
-    logger.info("View submitted", extra={"view": request})
-    requester = slack_helpers.get_user(client, id=request.requester_slack_id)
-
-    # Try to use cached user info from load_select_options_for_account_access_request
-    callback_id = slack_helpers.RequestForAccessView.CALLBACK_ID
-    view_key = f"{request.requester_slack_id}:{callback_id}"
-    cached_user_principal_id = user_view_map.get(f"{view_key}:user_principal_id")
-    cached_group_ids = user_view_map.get(f"{view_key}:group_ids")
-
-    identity_store_id = sso.get_identity_store_id(cfg, sso_client)
-
-    if cached_user_principal_id and cached_group_ids is not None:
-        logger.debug("Using cached user info", extra={"view_key": view_key})
-        user_principal_id = cached_user_principal_id
-        user_group_ids = cached_group_ids
-    else:
-        # Fall back to API calls if cache miss (defense in depth)
-        logger.debug("Cache miss, fetching user info from API", extra={"view_key": view_key})
-        user_principal_id, _ = sso.get_user_principal_id_by_email(
-            identity_store_client=identity_store_client,
-            identity_store_id=identity_store_id,
-            email=requester.email,
-            cfg=cfg,
-        )
-        user_group_ids = sso.get_user_group_ids(
-            identity_store_client=identity_store_client,
-            identity_store_id=identity_store_id,
-            user_principal_id=user_principal_id,
-        )
-
+    is_user_in_channel: bool,
+) -> None:
+    """Process a single account access request (post approval message, make decision, etc.)."""
     # Look up permission set to get ARN for matching against ARN-based config
     permission_set = sso.get_permission_set(sso_client, cfg.sso_instance_arn, request.permission_set_name)
 
@@ -598,8 +567,6 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
             dm_text = "There are no statements for this Permission Set & Account."
             status_text = cfg.denied_status
 
-    is_user_in_channel = slack_helpers.check_if_user_is_in_channel(client, cfg.slack_channel_id, requester.id)
-
     logger.info(f"Sending message to the channel {cfg.slack_channel_id}, message: {text}")
     client.chat_postMessage(text=text, thread_ts=slack_response["ts"], channel=cfg.slack_channel_id)
     if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
@@ -682,6 +649,68 @@ def handle_request_for_access_submittion(  # noqa: PLR0915, PLR0912
             )
 
 
+@handle_errors
+def handle_request_for_access_submittion(
+    body: dict,
+    ack: Ack,  # noqa: ARG001
+    client: WebClient,
+    context: BoltContext,  # noqa: ARG001
+) -> SlackResponse | None:
+    logger.info("Handling request for access submission")
+    requests = slack_helpers.RequestForAccessView.parse_multi(body)
+    logger.info("View submitted", extra={"requests": [r.model_dump() for r in requests]})
+
+    if not requests:
+        logger.warning("No accounts selected in submission")
+        return None
+
+    requester = slack_helpers.get_user(client, id=requests[0].requester_slack_id)
+
+    # Try to use cached user info from load_select_options_for_account_access_request
+    callback_id = slack_helpers.RequestForAccessView.CALLBACK_ID
+    view_key = f"{requester.id}:{callback_id}"
+    cached_user_principal_id = user_view_map.get(f"{view_key}:user_principal_id")
+    cached_group_ids = user_view_map.get(f"{view_key}:group_ids")
+
+    identity_store_id = sso.get_identity_store_id(cfg, sso_client)
+
+    if cached_user_principal_id and cached_group_ids is not None:
+        logger.debug("Using cached user info", extra={"view_key": view_key})
+        user_group_ids = cached_group_ids
+    else:
+        # Fall back to API calls if cache miss (defense in depth)
+        logger.debug("Cache miss, fetching user info from API", extra={"view_key": view_key})
+        user_principal_id, _ = sso.get_user_principal_id_by_email(
+            identity_store_client=identity_store_client,
+            identity_store_id=identity_store_id,
+            email=requester.email,
+            cfg=cfg,
+        )
+        user_group_ids = sso.get_user_group_ids(
+            identity_store_client=identity_store_client,
+            identity_store_id=identity_store_id,
+            user_principal_id=user_principal_id,
+        )
+
+    is_user_in_channel = slack_helpers.check_if_user_is_in_channel(client, cfg.slack_channel_id, requester.id)
+
+    # Fan out: process each account request independently
+    for request in requests:
+        try:
+            _process_single_access_request(
+                request=request,
+                requester=requester,
+                user_group_ids=user_group_ids,
+                client=client,
+                is_user_in_channel=is_user_in_channel,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to process access request for account",
+                extra={"account_id": request.account_id},
+            )
+
+
 app.view(slack_helpers.RequestForAccessView.CALLBACK_ID)(
     ack=acknowledge_request,
     lazy=[handle_request_for_access_submittion],
@@ -703,12 +732,23 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
     ack()
     logger.info("Handling account selection")
 
-    account_id = jp.search(
-        f"view.state.values.{slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID}"
-        f".{slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID}.selected_option.value",
-        body,
+    selected_options = (
+        jp.search(
+            f"view.state.values.{slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID}"
+            f".{slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID}.selected_options",
+            body,
+        )
+        or []
     )
-    logger.info(f"Selected account: {account_id}")
+    account_ids = [opt["value"] for opt in selected_options]
+    logger.info(f"Selected accounts: {account_ids}")
+
+    view_id = body["view"]["id"]
+
+    # No accounts selected → show placeholder, disable submit
+    if not account_ids:
+        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
+        return client.views_update(view_id=view_id, view=updated_view)
 
     # Get cached user_group_ids
     user_id = body.get("user", {}).get("id")
@@ -724,12 +764,11 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
         )
         user_group_ids = set()
 
-    # Filter permission sets based on user's eligible statements
-    valid_ps_names = statement.get_permission_sets_for_account_and_user(cfg.statements, account_id, user_group_ids)
-    logger.info(f"Valid permission sets for account and user: {valid_ps_names}")
+    # Compute intersection of permission sets across all selected accounts
+    valid_ps_names = statement.get_permission_sets_for_accounts_and_user(cfg.statements, account_ids, user_group_ids)
+    logger.info(f"Valid permission sets for selected accounts and user: {valid_ps_names}")
 
     if not valid_ps_names:
-        view_id = body["view"]["id"]
         updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
         return client.views_update(view_id=view_id, view=updated_view)
 
@@ -741,11 +780,9 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
 
     # Handle case where filtered list is empty (configured names don't exist in SSO)
     if not permission_sets:
-        view_id = body["view"]["id"]
         updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
         return client.views_update(view_id=view_id, view=updated_view)
 
-    view_id = body["view"]["id"]
     updated_view = slack_helpers.RequestForAccessView.update_with_permission_sets(
         view_blocks=body["view"]["blocks"],
         permission_sets=permission_sets,

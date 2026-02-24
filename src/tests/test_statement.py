@@ -4,6 +4,7 @@ from statement import (
     get_eligible_statements_for_user,
     get_permission_sets_for_account,
     get_permission_sets_for_account_and_user,
+    get_permission_sets_for_accounts_and_user,
     is_statement_eligible_for_user,
 )
 
@@ -276,3 +277,72 @@ class TestGetPermissionSetsForAccount:
         )
         result = get_permission_sets_for_account(frozenset([statement]), "111111111111")
         assert result == {"*"}
+
+
+class TestGetPermissionSetsForAccountsAndUser:
+    """Tests for get_permission_sets_for_accounts_and_user (multi-account intersection)."""
+
+    def test_single_account_same_as_single_account_helper(self):
+        statement = Statement.model_validate(
+            {
+                "resource": ["111111111111"],
+                "permission_set": ["ReadOnlyAccess", "AdminAccess"],
+            }
+        )
+        result = get_permission_sets_for_accounts_and_user(frozenset([statement]), ["111111111111"], set())
+        assert result == {"ReadOnlyAccess", "AdminAccess"}
+
+    def test_intersection_of_two_accounts(self):
+        s1 = Statement.model_validate({"resource": ["111111111111"], "permission_set": ["ReadOnlyAccess", "AdminAccess"]})
+        s2 = Statement.model_validate({"resource": ["222222222222"], "permission_set": ["ReadOnlyAccess", "ViewOnlyAccess"]})
+        statements = frozenset([s1, s2])
+        result = get_permission_sets_for_accounts_and_user(statements, ["111111111111", "222222222222"], set())
+        assert result == {"ReadOnlyAccess"}
+
+    def test_empty_intersection(self):
+        s1 = Statement.model_validate({"resource": ["111111111111"], "permission_set": ["AdminAccess"]})
+        s2 = Statement.model_validate({"resource": ["222222222222"], "permission_set": ["ReadOnlyAccess"]})
+        statements = frozenset([s1, s2])
+        result = get_permission_sets_for_accounts_and_user(statements, ["111111111111", "222222222222"], set())
+        assert result == set()
+
+    def test_empty_account_ids_returns_empty(self):
+        statement = Statement.model_validate({"resource": ["111111111111"], "permission_set": ["ReadOnlyAccess"]})
+        result = get_permission_sets_for_accounts_and_user(frozenset([statement]), [], set())
+        assert result == set()
+
+    def test_wildcard_account_does_not_constrain(self):
+        """Wildcard PS for one account should not constrain the intersection."""
+        s1 = Statement.model_validate({"resource": ["111111111111"], "permission_set": ["*"]})
+        s2 = Statement.model_validate({"resource": ["222222222222"], "permission_set": ["ReadOnlyAccess"]})
+        statements = frozenset([s1, s2])
+        result = get_permission_sets_for_accounts_and_user(statements, ["111111111111", "222222222222"], set())
+        assert result == {"ReadOnlyAccess"}
+
+    def test_all_wildcard_returns_wildcard(self):
+        """If all accounts return wildcard, result is wildcard."""
+        s1 = Statement.model_validate({"resource": ["*"], "permission_set": ["*"]})
+        result = get_permission_sets_for_accounts_and_user(frozenset([s1]), ["111111111111", "222222222222"], set())
+        assert result == {"*"}
+
+    def test_respects_user_group_filtering(self):
+        s1 = Statement.model_validate(
+            {
+                "resource": ["111111111111"],
+                "permission_set": ["AdminAccess"],
+                "required_group_membership": ["admin-group"],
+            }
+        )
+        s2 = Statement.model_validate(
+            {
+                "resource": ["111111111111"],
+                "permission_set": ["ReadOnlyAccess"],
+            }
+        )
+        statements = frozenset([s1, s2])
+        # Without admin group
+        result = get_permission_sets_for_accounts_and_user(statements, ["111111111111"], set())
+        assert result == {"ReadOnlyAccess"}
+        # With admin group
+        result = get_permission_sets_for_accounts_and_user(statements, ["111111111111"], {"admin-group"})
+        assert result == {"ReadOnlyAccess", "AdminAccess"}

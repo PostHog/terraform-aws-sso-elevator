@@ -9,6 +9,7 @@ import slack_sdk.errors
 from slack_helpers import (
     ButtonClickedPayload,
     ButtonGroupClickedPayload,
+    RequestForAccessView,
     build_approver_group_mentions,
     get_max_duration_block,
     get_usergroup_members,
@@ -499,3 +500,67 @@ class TestBuildApproverGroupMentions:
         """Empty frozenset returns empty string."""
         result = build_approver_group_mentions(frozenset())
         assert result == ""
+
+
+class TestParseMulti:
+    """Tests for RequestForAccessView.parse_multi."""
+
+    def _make_submission(self, account_values: list[str]) -> dict:
+        """Create a realistic Slack view submission payload with multi-select accounts."""
+        return {
+            "user": {"id": "U_REQUESTER"},
+            "view": {
+                "state": {
+                    "values": {
+                        RequestForAccessView.DURATION_BLOCK_ID: {
+                            RequestForAccessView.DURATION_ACTION_ID: {
+                                "selected_option": {"value": "01:00"},
+                            },
+                        },
+                        RequestForAccessView.ACCOUNT_BLOCK_ID: {
+                            RequestForAccessView.ACCOUNT_ACTION_ID: {
+                                "selected_options": [{"value": v} for v in account_values],
+                            },
+                        },
+                        RequestForAccessView.PERMISSION_SET_BLOCK_ID: {
+                            RequestForAccessView.PERMISSION_SET_ACTION_ID: {
+                                "selected_option": {"value": "arn:aws:sso:::permissionSet/ssoins-abc/ps-123"},
+                            },
+                        },
+                        RequestForAccessView.REASON_BLOCK_ID: {
+                            RequestForAccessView.REASON_ACTION_ID: {
+                                "value": "Testing multi-account",
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+    def test_single_account(self):
+        """Single account returns one request."""
+        obj = self._make_submission(["111111111111"])
+        results = RequestForAccessView.parse_multi(obj)
+        assert len(results) == 1
+        assert results[0].account_id == "111111111111"
+        assert results[0].requester_slack_id == "U_REQUESTER"
+        assert results[0].reason == "Testing multi-account"
+        assert results[0].permission_duration == timedelta(hours=1)
+
+    def test_multiple_accounts(self):
+        """Multiple accounts return one request per account."""
+        obj = self._make_submission(["111111111111", "222222222222", "333333333333"])
+        results = RequestForAccessView.parse_multi(obj)
+        assert len(results) == 3
+        account_ids = [r.account_id for r in results]
+        assert account_ids == ["111111111111", "222222222222", "333333333333"]
+        # All share the same permission set and reason
+        for r in results:
+            assert r.permission_set_name == "arn:aws:sso:::permissionSet/ssoins-abc/ps-123"
+            assert r.reason == "Testing multi-account"
+
+    def test_empty_selection_returns_empty(self):
+        """No accounts selected returns empty list."""
+        obj = self._make_submission([])
+        results = RequestForAccessView.parse_multi(obj)
+        assert results == []
