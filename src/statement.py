@@ -105,6 +105,36 @@ def get_permission_sets_for_account_and_user(statements: FrozenSet[Statement], a
     return get_permission_sets_for_account(eligible_statements, account_id)
 
 
+def get_permission_sets_for_accounts_and_user(
+    statements: FrozenSet[Statement],
+    account_ids: list[str],
+    user_group_ids: set[str],
+) -> set[str]:
+    """Return permission set names valid for ALL given accounts (intersection).
+
+    Wildcard {"*"} is treated as unconstrained — it only restricts the
+    intersection when every account returns wildcard.
+    """
+    if not account_ids:
+        return set()
+
+    result: set[str] | None = None
+    for account_id in account_ids:
+        ps = get_permission_sets_for_account_and_user(statements, account_id, user_group_ids)
+        if result is None:
+            result = ps
+        elif ps == {"*"}:
+            # Wildcard doesn't constrain; keep current result
+            continue
+        elif result == {"*"}:
+            # Previous was wildcard, now we have a concrete set
+            result = ps
+        else:
+            result = result & ps
+
+    return result if result is not None else set()
+
+
 class OUStatement(BaseStatement):
     resource_type: ResourceType = Field(default=ResourceType.OU, frozen=True)
     resource: FrozenSet[Union[AWSOUName, WildCard]]

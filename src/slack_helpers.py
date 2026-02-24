@@ -20,6 +20,7 @@ from slack_sdk.models.blocks import (
     PlainTextInputElement,
     PlainTextObject,
     SectionBlock,
+    StaticMultiSelectElement,
     StaticSelectElement,
 )
 from slack_sdk.models.views import View
@@ -109,18 +110,18 @@ class RequestForAccessView:
     @classmethod
     def build_select_account_input_block(cls, accounts: list[entities.aws.Account]) -> InputBlock:
         # TODO: handle case when there are more than 100 accounts
-        # 99 is the limit for StaticSelectElement
-        # https://slack.dev/python-slack-sdk/api-docs/slack_sdk/models/blocks/block_elements.html#:~:text=StaticSelectElement(InputInteractiveElement)%3A%0A%20%20%20%20type%20%3D%20%22static_select%22-,options_max_length%20%3D%20100,-option_groups_max_length%20%3D%20100%0A%0A%20%20%20%20%40property%0A%20%20%20%20def%20attributes(
+        # 99 is the limit for StaticMultiSelectElement
         if len(accounts) > 99:  # noqa: PLR2004
             accounts = accounts[:99]
         sorted_accounts = sorted(accounts, key=lambda account: account.name)
         return InputBlock(
             block_id=cls.ACCOUNT_BLOCK_ID,
             dispatch_action=True,
-            label=PlainTextObject(text="AWS Account"),
-            element=StaticSelectElement(
+            label=PlainTextObject(text="AWS Account(s)"),
+            element=StaticMultiSelectElement(
                 action_id=cls.ACCOUNT_ACTION_ID,
-                placeholder=PlainTextObject(text="Select account"),
+                placeholder=PlainTextObject(text="Select account(s)"),
+                max_selected_items=10,
                 options=[
                     Option(text=PlainTextObject(text=f"{account.id} - {account.name}"), value=account.id) for account in sorted_accounts
                 ],
@@ -188,7 +189,7 @@ class RequestForAccessView:
     def build_no_permission_sets_block(cls) -> SectionBlock:
         return SectionBlock(
             block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
-            text=MarkdownTextObject(text=":x: No permission sets configured for this account. Contact your admin."),
+            text=MarkdownTextObject(text=":x: No common permission sets configured for the selected account(s). Contact your admin."),
         )
 
     @classmethod
@@ -250,11 +251,36 @@ class RequestForAccessView:
                 "permission_set_name": jp.search(
                     f"{cls.PERMISSION_SET_BLOCK_ID}.{cls.PERMISSION_SET_ACTION_ID}.selected_option.value", values
                 ),
-                "account_id": jp.search(f"{cls.ACCOUNT_BLOCK_ID}.{cls.ACCOUNT_ACTION_ID}.selected_option.value", values),
+                "account_id": jp.search(f"{cls.ACCOUNT_BLOCK_ID}.{cls.ACCOUNT_ACTION_ID}.selected_options[0].value", values),
                 "reason": jp.search(f"{cls.REASON_BLOCK_ID}.{cls.REASON_ACTION_ID}.value", values),
                 "requester_slack_id": jp.search("user.id", obj),
             }
         )
+
+    @classmethod
+    def parse_multi(cls, obj: dict) -> list[RequestForAccess]:
+        """Parse submission into one RequestForAccess per selected account."""
+        values = jp.search("view.state.values", obj)
+        hhmm = jp.search(f"{cls.DURATION_BLOCK_ID}.{cls.DURATION_ACTION_ID}.selected_option.value", values)
+        hours, minutes = map(int, hhmm.split(":"))
+        duration = timedelta(hours=hours, minutes=minutes)
+
+        permission_set_name = jp.search(f"{cls.PERMISSION_SET_BLOCK_ID}.{cls.PERMISSION_SET_ACTION_ID}.selected_option.value", values)
+        reason = jp.search(f"{cls.REASON_BLOCK_ID}.{cls.REASON_ACTION_ID}.value", values)
+        requester_slack_id = jp.search("user.id", obj)
+
+        selected_options = jp.search(f"{cls.ACCOUNT_BLOCK_ID}.{cls.ACCOUNT_ACTION_ID}.selected_options", values) or []
+
+        return [
+            RequestForAccess(
+                permission_duration=duration,
+                permission_set_name=permission_set_name,
+                account_id=opt["value"],
+                reason=reason,
+                requester_slack_id=requester_slack_id,
+            )
+            for opt in selected_options
+        ]
 
 
 T = TypeVar("T", Block, dict)

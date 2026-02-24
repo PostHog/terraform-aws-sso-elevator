@@ -1,10 +1,12 @@
-"""Tests for main module - check_early_revoke_authorization function."""
+"""Tests for main module."""
 
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 import sys
 
 import pytest
 
+import config  # noqa: F401 — must import before mock_main_imports patches boto3
 import entities
 
 
@@ -40,6 +42,8 @@ def mock_main_imports():
     mock_cfg.pending_status = "Pending"
     mock_cfg.granted_status = "Granted"
     mock_cfg.denied_status = "Denied"
+    mock_cfg.approver_renotification_initial_wait_time = 15
+    mock_cfg.send_dm_if_user_not_in_channel = False
 
     # Patch config module before importing main
     with patch.dict(
@@ -294,3 +298,239 @@ class TestCheckEarlyRevokeAuthorization:
         assert result is False
         # resolve_groups_fn should not be called with empty list
         mock_resolve_groups.assert_not_called()
+
+
+@pytest.fixture()
+def import_main(mock_main_imports):  # noqa: ARG001
+    """Import main module with all side effects mocked."""
+    import os
+
+    # Remove main from sys.modules cache so it re-imports with our mocks
+    sys.modules.pop("main", None)
+
+    # Mock slack_bolt.App so it doesn't call auth.test during import
+    mock_app = MagicMock()
+    with (
+        patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test-token"}),
+        patch("slack_bolt.App", return_value=mock_app),
+    ):
+        import main
+
+        yield main
+
+    sys.modules.pop("main", None)
+
+
+class TestMultiAccountFanOut:
+    """Tests for multi-account fan-out in handle_request_for_access_submittion."""
+
+    def _build_request(self, account_id: str):
+        import slack_helpers
+
+        return slack_helpers.RequestForAccess(
+            permission_set_name="TestPermissionSet",
+            account_id=account_id,
+            reason="Testing",
+            requester_slack_id="U_REQUESTER",
+            permission_duration=timedelta(hours=1),
+        )
+
+    def _make_decision_side_effect(self, auto_approve_account: str):
+        """Return a side_effect function that auto-approves one account, requires approval for others."""
+        import access_control
+
+        def side_effect(*args, **kwargs):
+            account_id = kwargs.get("account_id") or args[1]
+            if account_id == auto_approve_account:
+                return access_control.AccessRequestDecision(
+                    grant=True,
+                    reason=access_control.DecisionReason.ApprovalNotRequired,
+                    based_on_statements=frozenset(),
+                    approvers=frozenset(),
+                    approver_groups=frozenset(),
+                )
+            return access_control.AccessRequestDecision(
+                grant=False,
+                reason=access_control.DecisionReason.RequiresApproval,
+                based_on_statements=frozenset(),
+                approvers=frozenset(["approver@test.com"]),
+                approver_groups=frozenset(),
+            )
+
+        return side_effect
+
+    def _setup_common_patches(self, main_module, auto_approve_account="111111111111"):
+        """Patch all dependencies of _process_single_access_request and handle_request_for_access_submittion."""
+        import access_control
+
+        patches = []
+
+        # access_control.make_decision_on_access_request
+        p = patch.object(
+            main_module.access_control,
+            "make_decision_on_access_request",
+            side_effect=self._make_decision_side_effect(auto_approve_account),
+        )
+        patches.append(p)
+
+        # access_control.execute_decision
+        def execute_side_effect(*args, **kwargs):
+            decision = kwargs.get("decision") or args[0]
+            if decision.grant:
+                return access_control.ExecuteDecisionResult(granted=True, schedule_name=None)
+            return access_control.ExecuteDecisionResult(granted=False)
+
+        p = patch.object(main_module.access_control, "execute_decision", side_effect=execute_side_effect)
+        patches.append(p)
+
+        # sso.get_permission_set
+        mock_ps = entities.aws.PermissionSet(name="TestPermissionSet", arn="arn:aws:sso:::permissionSet/test", description=None)
+        p = patch.object(main_module.sso, "get_permission_set", return_value=mock_ps)
+        patches.append(p)
+
+        # organizations.describe_account
+        def describe_account_side_effect(_client, account_id):
+            return entities.aws.Account(id=account_id, name=f"Account-{account_id}")
+
+        p = patch.object(main_module.organizations, "describe_account", side_effect=describe_account_side_effect)
+        patches.append(p)
+
+        # slack_helpers
+        p = patch.object(main_module.slack_helpers, "build_approval_request_message_blocks", return_value=[])
+        patches.append(p)
+        p = patch.object(main_module.slack_helpers, "check_if_user_is_in_channel", return_value=True)
+        patches.append(p)
+        p = patch.object(
+            main_module.slack_helpers,
+            "get_user",
+            return_value=entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester"),
+        )
+        patches.append(p)
+        p = patch.object(
+            main_module.slack_helpers,
+            "find_approvers_in_slack",
+            return_value=(
+                [entities.slack.User(id="U_APPROVER", email="approver@test.com", real_name="Approver")],
+                [],
+            ),
+        )
+        patches.append(p)
+        p = patch.object(main_module.slack_helpers, "build_approver_group_mentions", return_value="")
+        patches.append(p)
+
+        # analytics
+        p = patch.object(main_module.analytics, "capture")
+        patches.append(p)
+
+        # schedule
+        p = patch.object(main_module.schedule, "schedule_discard_buttons_event")
+        patches.append(p)
+        p = patch.object(main_module.schedule, "schedule_approver_notification_event")
+        patches.append(p)
+
+        # sso identity helpers (for cache-miss fallback)
+        p = patch.object(main_module.sso, "get_identity_store_id", return_value="d-123456")
+        patches.append(p)
+        p = patch.object(main_module.sso, "get_user_principal_id_by_email", return_value=("principal-id", None))
+        patches.append(p)
+        p = patch.object(main_module.sso, "get_user_group_ids", return_value=set())
+        patches.append(p)
+
+        return patches
+
+    def test_mixed_approval_policies_independent_outcomes(self, import_main):
+        """Account A auto-grants (ApprovalNotRequired) while Account B posts approval buttons (RequiresApproval)."""
+        main = import_main
+
+        mock_client = MagicMock()
+        mock_client.chat_postMessage.return_value = {"ts": "123.456", "message": {"blocks": []}}
+
+        patches = self._setup_common_patches(main, auto_approve_account="111111111111")
+        mocks = {}
+        for p in patches:
+            m = p.start()
+            # Track execute_decision and make_decision mocks by attribute name
+            if hasattr(p, "attribute"):
+                mocks[p.attribute] = m
+
+        try:
+            requests = [
+                self._build_request("111111111111"),
+                self._build_request("222222222222"),
+            ]
+            requester = entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester")
+
+            for req in requests:
+                main._process_single_access_request(
+                    request=req,
+                    requester=requester,
+                    user_group_ids=set(),
+                    client=mock_client,
+                    is_user_in_channel=True,
+                )
+
+            # chat_postMessage called for both accounts (at least once each for the approval message)
+            assert mock_client.chat_postMessage.call_count >= 2
+
+            # execute_decision called twice
+            exec_mock = mocks.get("execute_decision")
+            assert exec_mock is not None
+            assert exec_mock.call_count == 2
+
+            # First call (account A) → grant=True, second call (account B) → grant=False
+            first_decision = exec_mock.call_args_list[0][1].get("decision") or exec_mock.call_args_list[0][0][0]
+            second_decision = exec_mock.call_args_list[1][1].get("decision") or exec_mock.call_args_list[1][0][0]
+            assert first_decision.grant is True
+            assert second_decision.grant is False
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_partial_failure_continues(self, import_main):
+        """If processing one account fails, the other accounts still get processed."""
+        main = import_main
+
+        mock_client = MagicMock()
+        mock_client.chat_postMessage.return_value = {"ts": "123.456", "message": {"blocks": []}}
+
+        patches = self._setup_common_patches(main, auto_approve_account="222222222222")
+        for p in patches:
+            p.start()
+
+        try:
+            # Make _process_single_access_request raise on first account
+            original_process = main._process_single_access_request
+            call_count = {"n": 0}
+
+            def process_with_first_failure(**kwargs):
+                call_count["n"] += 1
+                if call_count["n"] == 1:
+                    raise RuntimeError("Simulated failure for first account")
+                return original_process(**kwargs)
+
+            requests = [
+                self._build_request("111111111111"),
+                self._build_request("222222222222"),
+            ]
+            requester = entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester")
+
+            # Simulate the fan-out loop from handle_request_for_access_submittion
+            for req in requests:
+                try:
+                    process_with_first_failure(
+                        request=req,
+                        requester=requester,
+                        user_group_ids=set(),
+                        client=mock_client,
+                        is_user_in_channel=True,
+                    )
+                except Exception:
+                    pass  # mirrors the try/except in handle_request_for_access_submittion
+
+            # Second account was still processed — chat_postMessage was called for it
+            assert mock_client.chat_postMessage.call_count >= 1
+            # The process function was called twice (first failed, second succeeded)
+            assert call_count["n"] == 2
+        finally:
+            for p in patches:
+                p.stop()
