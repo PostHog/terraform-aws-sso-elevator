@@ -934,6 +934,215 @@ app.action(entities.ApproverAction.EarlyRevoke.value)(
 )
 
 
+# Extend Grant Handlers
+# ----------------------
+
+
+@handle_errors
+def handle_extend_grant_button_click(body: dict, client: WebClient, context: BoltContext) -> SlackResponse | None:  # noqa: ARG001, PLR0915
+    """Handle the 'Extend access' button click."""
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    logger.info("Handling extend grant button click")
+
+    clicker_slack_id = jp.search("user.id", body)
+    channel_id = jp.search("channel.id", body)
+    thread_ts = jp.search("message.thread_ts", body) or jp.search("message.ts", body)
+
+    # Parse the button value
+    button_value = jp.search("actions[0].value", body)
+    try:
+        payload = slack_helpers.ExtendGrantButtonPayload.model_validate(json.loads(button_value))
+    except Exception as e:
+        logger.error(f"Failed to parse extend grant button payload: {e}")
+        return client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text="Failed to process extend request. Please try again.",
+        )
+
+    # Auth: only original requester can extend
+    if clicker_slack_id != payload.requester_slack_id:
+        return client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=f"<@{clicker_slack_id}> Only the original requester can extend this session.",
+        )
+
+    # Check 1hr window
+    expired_at = datetime.fromisoformat(payload.expired_at)
+    now = datetime.now(timezone.utc)
+    if now - expired_at > timedelta(hours=1):
+        return client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text="Extension window has expired. You can only extend within 1 hour of session expiry.",
+        )
+
+    # Delete extend button from thread
+    slack_helpers.delete_extend_grant_button(client, channel_id, thread_ts)
+
+    # Reconstruct approver/requester User objects
+    approver = entities.slack.User.model_validate(payload.approver)
+    requester = entities.slack.User.model_validate(payload.requester)
+    extension_duration = timedelta(minutes=payload.extension_duration_in_minutes)
+    new_extensions_count = payload.extensions_count + 1
+
+    if payload.account_id and payload.permission_set_arn:
+        # Account access extension
+        account_assignment = sso.UserAccountAssignment(
+            instance_arn=payload.instance_arn,
+            account_id=payload.account_id,
+            permission_set_arn=payload.permission_set_arn,
+            user_principal_id=payload.user_principal_id,
+        )
+
+        sso.create_account_assignment_and_wait_for_result(sso_client, account_assignment)
+
+        _, schedule_name = schedule.schedule_revoke_event(
+            permission_duration=extension_duration,
+            schedule_client=schedule_client,
+            approver=approver,
+            requester=requester,
+            user_account_assignment=account_assignment,
+            thread_ts=thread_ts,
+            permission_set_name=payload.permission_set_name,
+            account_name=payload.account_name,
+            can_extend_expired_grant=True,
+            extension_duration_in_minutes=payload.extension_duration_in_minutes,
+            extensions_count=new_extensions_count,
+        )
+
+        # Post early revoke button for the extension
+        early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
+            schedule_name=schedule_name,
+            requester_slack_id=requester.id,
+            account_id=payload.account_id,
+            permission_set_name=payload.permission_set_name,
+            permission_set_arn=payload.permission_set_arn,
+            instance_arn=payload.instance_arn,
+            user_principal_id=payload.user_principal_id,
+        )
+
+        import s3
+
+        s3.log_operation(
+            audit_entry=s3.AuditEntry(
+                account_id=payload.account_id,
+                role_name=payload.permission_set_name or "NA",
+                reason="extension",
+                requester_slack_id=requester.id,
+                requester_email=requester.email,
+                approver_slack_id=approver.id,
+                approver_email=approver.email,
+                operation_type="extend",
+                permission_duration=extension_duration,
+                sso_user_principal_id=payload.user_principal_id,
+                audit_entry_type="account",
+            ),
+        )
+
+    elif payload.group_id:
+        # Group access extension
+        identity_store_id = payload.identity_store_id or sso.get_identity_store_id(cfg, sso_client)
+        membership_result = sso.add_user_to_a_group(payload.group_id, payload.user_principal_id, identity_store_id, identity_store_client)
+        membership_id = membership_result["MembershipId"]
+
+        group_assignment = sso.GroupAssignment(
+            identity_store_id=identity_store_id,
+            group_name=payload.group_name or "",
+            group_id=payload.group_id,
+            user_principal_id=payload.user_principal_id,
+            membership_id=membership_id,
+        )
+
+        _, schedule_name = schedule.schedule_group_revoke_event(
+            permission_duration=extension_duration,
+            schedule_client=schedule_client,
+            approver=approver,
+            requester=requester,
+            group_assignment=group_assignment,
+            thread_ts=thread_ts,
+            can_extend_expired_grant=True,
+            extension_duration_in_minutes=payload.extension_duration_in_minutes,
+            extensions_count=new_extensions_count,
+        )
+
+        # Post early revoke button for the extension
+        early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
+            schedule_name=schedule_name,
+            requester_slack_id=requester.id,
+            group_id=payload.group_id,
+            group_name=payload.group_name,
+            identity_store_id=identity_store_id,
+            membership_id=membership_id,
+            user_principal_id=payload.user_principal_id,
+        )
+
+        import s3
+
+        s3.log_operation(
+            audit_entry=s3.AuditEntry(
+                group_name=payload.group_name or "NA",
+                group_id=payload.group_id,
+                reason="extension",
+                requester_slack_id=requester.id,
+                requester_email=requester.email,
+                approver_slack_id=approver.id,
+                approver_email=approver.email,
+                operation_type="extend",
+                permission_duration=extension_duration,
+                sso_user_principal_id=payload.user_principal_id,
+                audit_entry_type="group",
+            ),
+        )
+    else:
+        return client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text="Invalid extend request: missing access details.",
+        )
+
+    # Update header back to GRANTED status
+    message = slack_helpers.get_message_from_timestamp(
+        channel_id=channel_id,
+        message_ts=thread_ts,
+        slack_client=client,
+    )
+    if message:
+        blocks = slack_helpers.HeaderSectionBlock.set_status(
+            blocks=message["blocks"],
+            status_text=cfg.granted_status,
+        )
+        client.chat_update(
+            channel=channel_id,
+            ts=thread_ts,
+            blocks=blocks,
+            text="Access extended",
+        )
+
+    # Post early revoke button
+    client.chat_postMessage(
+        channel=channel_id,
+        thread_ts=thread_ts,
+        blocks=[slack_helpers.build_early_revoke_button(early_revoke_payload).to_dict()],
+        text="End session early",
+    )
+
+    return client.chat_postMessage(
+        channel=channel_id,
+        thread_ts=thread_ts,
+        text=f"Access extended for {payload.extension_duration_in_minutes} minutes.",
+    )
+
+
+app.action(entities.ApproverAction.ExtendGrant.value)(
+    ack=acknowledge_request,
+    lazy=[handle_extend_grant_button_click],
+)
+
+
 @handle_errors
 def handle_early_revoke_modal_submission(body: dict, client: WebClient, context: BoltContext) -> SlackResponse | None:  # noqa: ARG001
     """Handle the early revoke modal submission."""

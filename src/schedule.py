@@ -140,6 +140,9 @@ def schedule_revoke_event(  # noqa: PLR0913
     thread_ts: str | None = None,
     permission_set_name: str | None = None,
     account_name: str | None = None,
+    can_extend_expired_grant: bool = False,
+    extension_duration_in_minutes: int = 15,
+    extensions_count: int = 0,
 ) -> tuple[scheduler_type_defs.CreateScheduleOutputTypeDef, str]:
     """Schedule a revoke event.
 
@@ -158,6 +161,9 @@ def schedule_revoke_event(  # noqa: PLR0913
         thread_ts=thread_ts,
         permission_set_name=permission_set_name,
         account_name=account_name,
+        can_extend_expired_grant=can_extend_expired_grant,
+        extension_duration_in_minutes=extension_duration_in_minutes,
+        extensions_count=extensions_count,
     )
     logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
     result = schedule_client.create_schedule(
@@ -188,6 +194,9 @@ def schedule_group_revoke_event(  # noqa: PLR0913
     requester: entities.slack.User,
     group_assignment: sso.GroupAssignment,
     thread_ts: str | None = None,
+    can_extend_expired_grant: bool = False,
+    extension_duration_in_minutes: int = 15,
+    extensions_count: int = 0,
 ) -> tuple[scheduler_type_defs.CreateScheduleOutputTypeDef, str]:
     """Schedule a group revoke event.
 
@@ -203,6 +212,9 @@ def schedule_group_revoke_event(  # noqa: PLR0913
         group_assignment=group_assignment,
         permission_duration=permission_duration,
         thread_ts=thread_ts,
+        can_extend_expired_grant=can_extend_expired_grant,
+        extension_duration_in_minutes=extension_duration_in_minutes,
+        extensions_count=extensions_count,
     )
     get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, group_assignment)
     logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
@@ -264,6 +276,38 @@ def schedule_discard_buttons_event(
                     schedule_name=schedule_name,
                     time_stamp=time_stamp,
                     channel_id=channel_id,
+                ).dict()
+            ),
+        ),
+    )
+
+
+def schedule_discard_extend_button_event(
+    schedule_client: EventBridgeSchedulerClient,
+    time_stamp: str,
+    channel_id: str,
+) -> scheduler_type_defs.CreateScheduleOutputTypeDef:
+    permission_duration = timedelta(hours=1)
+
+    logger.info("Scheduling discard extend button event")
+    schedule_name = "discard-buttons-extend" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
+    return schedule_client.create_schedule(
+        ActionAfterCompletion="DELETE",
+        FlexibleTimeWindow={"Mode": "OFF"},
+        Name=schedule_name,
+        GroupName=cfg.schedule_group_name,
+        ScheduleExpression=event_bridge_schedule_after(permission_duration),
+        State="ENABLED",
+        Target=scheduler_type_defs.TargetTypeDef(
+            Arn=cfg.revoker_function_arn,
+            RoleArn=cfg.schedule_policy_arn,
+            Input=json.dumps(
+                DiscardButtonsEvent(
+                    action="discard_buttons_event",
+                    schedule_name=schedule_name,
+                    time_stamp=time_stamp,
+                    channel_id=channel_id,
+                    block_id="extend_grant_button",
                 ).dict()
             ),
         ),
