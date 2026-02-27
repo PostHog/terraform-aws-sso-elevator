@@ -27,6 +27,8 @@ class BaseStatement(BaseModel):
     approvers: FrozenSet[EmailStr] = Field(default_factory=frozenset)
     approver_groups: FrozenSet[str] = Field(default_factory=frozenset)
     required_group_membership: FrozenSet[str] = Field(default_factory=frozenset)
+    can_extend_expired_grant: bool = False
+    extension_duration_in_minutes: int = 15
 
 
 class Statement(BaseStatement):
@@ -151,6 +153,8 @@ class GroupStatement(BaseModel):
     approval_is_not_required: bool | None = None
     approvers: FrozenSet[EmailStr] = Field(default_factory=frozenset)
     approver_groups: FrozenSet[str] = Field(default_factory=frozenset)
+    can_extend_expired_grant: bool = False
+    extension_duration_in_minutes: int = 15
 
     def affects(self, group_id: str) -> bool:  # noqa: ANN101
         return group_id in self.resource

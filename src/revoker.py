@@ -646,6 +646,34 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
             thread_ts=revoke_event.thread_ts,
         )
 
+        # Post extend button if eligible (natural expiry only, max 1 extension)
+        if revoke_event.can_extend_expired_grant and revoke_event.thread_ts and revoke_event.extensions_count < 1:
+            extend_payload = slack_helpers.ExtendGrantButtonPayload(
+                requester_slack_id=revoke_event.requester.id,
+                expired_at=datetime.now(timezone.utc).isoformat(),
+                extension_duration_in_minutes=revoke_event.extension_duration_in_minutes,
+                extensions_count=revoke_event.extensions_count,
+                account_id=user_account_assignment.account_id,
+                permission_set_name=permission_set.name,
+                permission_set_arn=user_account_assignment.permission_set_arn,
+                instance_arn=user_account_assignment.instance_arn,
+                user_principal_id=user_account_assignment.user_principal_id,
+                account_name=account.name,
+                approver=revoke_event.approver.model_dump(),
+                requester=revoke_event.requester.model_dump(),
+            )
+            extend_response = slack_client.chat_postMessage(
+                channel=cfg.slack_channel_id,
+                thread_ts=revoke_event.thread_ts,
+                blocks=[slack_helpers.build_extend_grant_button(extend_payload).to_dict()],
+                text=f"Extend access ({revoke_event.extension_duration_in_minutes} min)",
+            )
+            schedule.schedule_discard_extend_button_event(
+                schedule_client=scheduler_client,
+                time_stamp=extend_response["ts"],
+                channel_id=cfg.slack_channel_id,
+            )
+
 
 def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
     group_revoke_event: GroupRevokeEvent,
@@ -701,6 +729,32 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
             slack_client=slack_client,
             thread_ts=group_revoke_event.thread_ts,
         )
+
+        # Post extend button if eligible (natural expiry only, max 1 extension)
+        if group_revoke_event.can_extend_expired_grant and group_revoke_event.thread_ts and group_revoke_event.extensions_count < 1:
+            extend_payload = slack_helpers.ExtendGrantButtonPayload(
+                requester_slack_id=group_revoke_event.requester.id,
+                expired_at=datetime.now(timezone.utc).isoformat(),
+                extension_duration_in_minutes=group_revoke_event.extension_duration_in_minutes,
+                extensions_count=group_revoke_event.extensions_count,
+                group_id=group_assignment.group_id,
+                group_name=group_assignment.group_name,
+                identity_store_id=group_assignment.identity_store_id,
+                user_principal_id=group_assignment.user_principal_id,
+                approver=group_revoke_event.approver.model_dump(),
+                requester=group_revoke_event.requester.model_dump(),
+            )
+            extend_response = slack_client.chat_postMessage(
+                channel=cfg.slack_channel_id,
+                thread_ts=group_revoke_event.thread_ts,
+                blocks=[slack_helpers.build_extend_grant_button(extend_payload).to_dict()],
+                text=f"Extend access ({group_revoke_event.extension_duration_in_minutes} min)",
+            )
+            schedule.schedule_discard_extend_button_event(
+                schedule_client=scheduler_client,
+                time_stamp=extend_response["ts"],
+                channel_id=cfg.slack_channel_id,
+            )
 
 
 def handle_check_on_inconsistency(  # noqa: PLR0913
@@ -926,19 +980,34 @@ def handle_sso_elevator_scheduled_revocation(  # noqa: PLR0913
 def handle_discard_buttons_event(
     event: DiscardButtonsEvent, slack_client: slack_sdk.WebClient, scheduler_client: EventBridgeSchedulerClient
 ) -> None:
+    schedule.delete_schedule(scheduler_client, event.schedule_name)
+
+    # Extend button messages are thread replies, so get_message_from_timestamp
+    # (which uses conversations_history) won't find them. Just delete directly
+    # since the schedule was created specifically for this message ts.
+    if event.block_id == "extend_grant_button":
+        try:
+            slack_client.chat_delete(
+                channel=event.channel_id,
+                ts=event.time_stamp,
+            )
+            logger.info("Extend button message deleted", extra={"event": event})
+        except Exception:
+            logger.warning("Extend button message not found for deletion", extra={"event": event})
+        return
+
     message = slack_helpers.get_message_from_timestamp(
         channel_id=event.channel_id,
         message_ts=event.time_stamp,
         slack_client=slack_client,
     )
-    schedule.delete_schedule(scheduler_client, event.schedule_name)
     if message is None:
         logger.warning("Message was not found", extra={"event": event})
         return
 
     for block in message["blocks"]:
-        if slack_helpers.get_block_id(block) == "buttons":
-            blocks = slack_helpers.remove_blocks(message["blocks"], block_ids=["buttons"])
+        if slack_helpers.get_block_id(block) == event.block_id:
+            blocks = slack_helpers.remove_blocks(message["blocks"], block_ids=[event.block_id])
             text = f"Request expired after {cfg.request_expiration_hours} hour(s)."
             blocks.append(
                 slack_helpers.SectionBlock(

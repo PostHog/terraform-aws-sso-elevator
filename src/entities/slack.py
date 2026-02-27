@@ -7,6 +7,7 @@ class ApproverAction(Enum):
     Approve = "approve"
     Deny = "deny"
     EarlyRevoke = "early_revoke"
+    ExtendGrant = "extend_grant"
 
 
 class User(BaseModel):

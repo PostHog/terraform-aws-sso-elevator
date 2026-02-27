@@ -189,16 +189,14 @@ class RequestForAccessView:
     def build_no_permission_sets_block(cls) -> SectionBlock:
         return SectionBlock(
             block_id=cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
-            text=MarkdownTextObject(text=":x: No common permission sets configured for the selected account(s). Contact your admin."),
+            text=MarkdownTextObject(text=":x: No common permission sets configured for the selected account(s)."),
         )
 
     @classmethod
     def build_no_eligible_accounts_block(cls) -> SectionBlock:
         return SectionBlock(
             block_id="no_eligible_accounts",
-            text=MarkdownTextObject(
-                text=":x: You don't have access to request any accounts. Contact your admin if you believe this is an error."
-            ),
+            text=MarkdownTextObject(text=":x: You don't have access to request any accounts."),
         )
 
     @classmethod
@@ -765,6 +763,68 @@ def build_early_revoke_button(payload: EarlyRevokeButtonPayload) -> ActionsBlock
             ),
         ],
     )
+
+
+class ExtendGrantButtonPayload(BaseModel):
+    """Payload for extend grant button click."""
+
+    requester_slack_id: str
+    expired_at: str  # ISO timestamp
+    extension_duration_in_minutes: int
+    extensions_count: int
+    # Account fields
+    account_id: Optional[str] = None
+    permission_set_name: Optional[str] = None
+    permission_set_arn: Optional[str] = None
+    instance_arn: Optional[str] = None
+    user_principal_id: str = ""
+    account_name: Optional[str] = None
+    # Group fields
+    group_id: Optional[str] = None
+    group_name: Optional[str] = None
+    identity_store_id: Optional[str] = None
+    # Approver/requester info for scheduling
+    approver: Optional[dict] = None
+    requester: Optional[dict] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_json_value(cls, values: dict) -> dict:
+        if isinstance(values, str):
+            import json
+
+            return json.loads(values)
+        return values
+
+
+def build_extend_grant_button(payload: ExtendGrantButtonPayload) -> ActionsBlock:
+    """Build an 'Extend access' button for the approval thread."""
+    import json
+
+    return ActionsBlock(
+        block_id="extend_grant_button",
+        elements=[
+            ButtonElement(
+                action_id=entities.ApproverAction.ExtendGrant.value,
+                text=PlainTextObject(text=f"Extend access ({payload.extension_duration_in_minutes} min)"),
+                value=json.dumps(payload.model_dump(mode="json")),
+            ),
+        ],
+    )
+
+
+def delete_extend_grant_button(client: WebClient, channel_id: str, thread_ts: str) -> bool:
+    """Find and delete the extend grant button message in a thread."""
+    try:
+        result = client.conversations_replies(channel=channel_id, ts=thread_ts)
+        for msg in result.get("messages", []):
+            blocks = msg.get("blocks", [])
+            if any(b.get("block_id") == "extend_grant_button" for b in blocks):
+                client.chat_delete(channel=channel_id, ts=msg["ts"])
+                return True
+    except slack_sdk.errors.SlackApiError as e:
+        logger.warning(f"Failed to delete extend grant button: {e}")
+    return False
 
 
 class EarlyRevokeModal:

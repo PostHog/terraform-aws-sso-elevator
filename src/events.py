@@ -18,6 +18,10 @@ class RevokeEvent(BaseModel):
     # Optional cached names to avoid API calls during revocation
     permission_set_name: str | None = None
     account_name: str | None = None
+    # Extend expired grant fields
+    can_extend_expired_grant: bool = False
+    extension_duration_in_minutes: int = 15
+    extensions_count: int = 0
 
 
 class GroupRevokeEvent(BaseModel):
@@ -27,6 +31,10 @@ class GroupRevokeEvent(BaseModel):
     group_assignment: sso.GroupAssignment
     permission_duration: timedelta
     thread_ts: str | None = None
+    # Extend expired grant fields
+    can_extend_expired_grant: bool = False
+    extension_duration_in_minutes: int = 15
+    extensions_count: int = 0
 
 
 class ScheduledGroupRevokeEvent(BaseModel):
@@ -58,6 +66,7 @@ class DiscardButtonsEvent(BaseModel):
     schedule_name: str
     time_stamp: str
     channel_id: str
+    block_id: str = "buttons"
 
 
 class CheckOnInconsistency(BaseModel):
