@@ -185,7 +185,7 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
 
         client.chat_postMessage(
             channel=cfg.slack_channel_id,
-            text=f"Permissions granted to <@{requester.id}>",
+            text="Permissions granted.",
             thread_ts=slack_response["ts"],
         )
         if not is_user_in_channel and cfg.send_dm_if_user_not_in_channel:
@@ -305,7 +305,7 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
             thread_ts=payload.thread_ts,
         )
 
-    text = f"Permissions granted to <@{requester.id}> by <@{approver.id}>."
+    text = f"Permissions granted by <@{approver.id}>."
     dm_text = f"Your request was approved by <@{approver.id}>. Permissions granted."
     blocks = slack_helpers.HeaderSectionBlock.set_status(
         blocks=payload.message["blocks"],
