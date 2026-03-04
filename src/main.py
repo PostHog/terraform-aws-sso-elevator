@@ -1010,7 +1010,6 @@ def handle_extend_grant_button_click(body: dict, client: WebClient, context: Bol
             permission_set_name=payload.permission_set_name,
             account_name=payload.account_name,
             can_extend_expired_grant=True,
-            extension_duration_in_minutes=payload.extension_duration_in_minutes,
             extensions_count=new_extensions_count,
         )
 
@@ -1065,7 +1064,6 @@ def handle_extend_grant_button_click(body: dict, client: WebClient, context: Bol
             group_assignment=group_assignment,
             thread_ts=thread_ts,
             can_extend_expired_grant=True,
-            extension_duration_in_minutes=payload.extension_duration_in_minutes,
             extensions_count=new_extensions_count,
         )
 

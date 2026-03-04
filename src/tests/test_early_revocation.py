@@ -3,7 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
-
+import errors
 import slack_helpers
 from slack_helpers import EarlyRevokeButtonPayload, EarlyRevokeModal, EarlyRevokeModalPayload
 
@@ -375,3 +375,91 @@ class TestBuildEarlyRevokeButton:
         assert parsed["schedule_name"] == "revoker-2024-01-15-10-30-00"
         assert parsed["requester_slack_id"] == "U12345"
         assert parsed["account_id"] == "123456789012"
+
+
+class TestEarlyAccountRevocationAlreadyRevoked:
+    """Tests that handle_early_account_revocation handles AccountAssignmentError gracefully."""
+
+    def _make_mocks(self):
+        """Create standard mocks for handle_early_account_revocation."""
+        mock_user = MagicMock()
+        mock_user.id = "U_USER"
+        mock_user.email = "user@example.com"
+
+        mock_permission_set = MagicMock()
+        mock_permission_set.name = "AdministratorAccess"
+
+        mock_cfg = MagicMock()
+        mock_cfg.post_update_to_slack = False
+
+        mock_assignment = MagicMock()
+        mock_assignment.instance_arn = "arn:aws:sso:::instance/ssoins-1234"
+        mock_assignment.account_id = "123456789012"
+        mock_assignment.permission_set_arn = "arn:aws:sso:::permissionSet/ssoins-1234/ps-5678"
+        mock_assignment.user_principal_id = "user-principal-123"
+
+        return mock_user, mock_permission_set, mock_cfg, mock_assignment
+
+    @patch("revoker.analytics")
+    @patch("revoker.s3")
+    @patch("revoker.schedule")
+    @patch("revoker.sso")
+    @patch("revoker.slack_helpers")
+    def test_already_revoked_does_not_raise(self, mock_sh, mock_sso, mock_schedule, mock_s3, _mock_analytics):
+        """AccountAssignmentError is caught and treated as success."""
+        import revoker
+
+        mock_user, mock_permission_set, mock_cfg, mock_assignment = self._make_mocks()
+        mock_sh.get_user.return_value = mock_user
+        mock_sso.delete_account_assignment_and_wait_for_result.side_effect = errors.AccountAssignmentError("Failed")
+        mock_sso.describe_permission_set.return_value = mock_permission_set
+
+        # Should not raise
+        revoker.handle_early_account_revocation(
+            user_account_assignment=mock_assignment,
+            schedule_name="test-schedule",
+            revoker_slack_id="U_REVOKER",
+            requester_slack_id="U_REQUESTER",
+            reason="testing",
+            sso_client=MagicMock(),
+            scheduler_client=MagicMock(),
+            org_client=MagicMock(),
+            slack_client=MagicMock(),
+            identitystore_client=MagicMock(),
+            cfg=mock_cfg,
+        )
+
+        # Schedule should still be deleted
+        mock_schedule.delete_schedule.assert_called_once()
+        # Audit log should use "already_revoked" as request_id
+        audit_entry_kwargs = mock_s3.AuditEntry.call_args[1]
+        assert audit_entry_kwargs["request_id"] == "already_revoked"
+
+    @patch("revoker.analytics")
+    @patch("revoker.s3")
+    @patch("revoker.schedule")
+    @patch("revoker.sso")
+    @patch("revoker.slack_helpers")
+    def test_other_exceptions_still_raise(self, _mock_sh, mock_sso, _mock_schedule, _mock_s3, _mock_analytics):
+        """Non-AccountAssignmentError exceptions are re-raised."""
+        import pytest
+
+        import revoker
+
+        _, _, mock_cfg, mock_assignment = self._make_mocks()
+        mock_sso.delete_account_assignment_and_wait_for_result.side_effect = RuntimeError("unexpected")
+
+        with pytest.raises(RuntimeError, match="unexpected"):
+            revoker.handle_early_account_revocation(
+                user_account_assignment=mock_assignment,
+                schedule_name="test-schedule",
+                revoker_slack_id="U_REVOKER",
+                requester_slack_id="U_REQUESTER",
+                reason=None,
+                sso_client=MagicMock(),
+                scheduler_client=MagicMock(),
+                org_client=MagicMock(),
+                slack_client=MagicMock(),
+                identitystore_client=MagicMock(),
+                cfg=mock_cfg,
+            )

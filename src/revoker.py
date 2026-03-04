@@ -14,6 +14,7 @@ from slack_sdk.web.slack_response import SlackResponse
 import analytics
 import config
 import entities
+import errors
 import organizations
 import s3
 import schedule
@@ -173,11 +174,16 @@ def handle_early_account_revocation(  # noqa: PLR0913
     logger.info("Handling early account revocation", extra={"schedule_name": schedule_name})
 
     # 1. Revoke SSO assignment first
+    already_revoked = False
     try:
         assignment_status = sso.delete_account_assignment_and_wait_for_result(
             sso_client,
             user_account_assignment,
         )
+    except errors.AccountAssignmentError:
+        logger.info("Account assignment already deleted, treating as already revoked", extra={"schedule_name": schedule_name})
+        assignment_status = None
+        already_revoked = True
     except Exception as e:
         logger.error("Failed to delete account assignment during early revocation", extra={"error": str(e)})
         raise
@@ -202,7 +208,7 @@ def handle_early_account_revocation(  # noqa: PLR0913
             reason=reason or "early_revocation",
             requester_slack_id=requester.id,
             requester_email=requester.email,
-            request_id=assignment_status.request_id,
+            request_id=assignment_status.request_id if assignment_status else "already_revoked",
             approver_slack_id=revoker.id,
             approver_email=revoker.email,
             operation_type="early_revoke",
@@ -249,7 +255,10 @@ def handle_early_account_revocation(  # noqa: PLR0913
             )
 
         reason_text = f" Reason: {reason}" if reason else ""
-        text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
+        if already_revoked:
+            text = f"<@{revoker_slack_id}> ended the session early (access was already revoked).{reason_text}"
+        else:
+            text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
         slack_helpers.delete_early_revoke_button(slack_client, cfg.slack_channel_id, thread_ts)
         return slack_client.chat_postMessage(
             channel=cfg.slack_channel_id,
@@ -648,10 +657,11 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
 
         # Post extend button if eligible (natural expiry only, max 1 extension)
         if revoke_event.can_extend_expired_grant and revoke_event.thread_ts and revoke_event.extensions_count < 1:
+            extension_minutes = min(int(revoke_event.permission_duration.total_seconds() / 60), 60)
             extend_payload = slack_helpers.ExtendGrantButtonPayload(
                 requester_slack_id=revoke_event.requester.id,
                 expired_at=datetime.now(timezone.utc).isoformat(),
-                extension_duration_in_minutes=revoke_event.extension_duration_in_minutes,
+                extension_duration_in_minutes=extension_minutes,
                 extensions_count=revoke_event.extensions_count,
                 account_id=user_account_assignment.account_id,
                 permission_set_name=permission_set.name,
@@ -666,7 +676,7 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
                 channel=cfg.slack_channel_id,
                 thread_ts=revoke_event.thread_ts,
                 blocks=[slack_helpers.build_extend_grant_button(extend_payload).to_dict()],
-                text=f"Extend access ({revoke_event.extension_duration_in_minutes} min)",
+                text=f"Extend access ({extension_minutes} min)",
             )
             schedule.schedule_discard_extend_button_event(
                 schedule_client=scheduler_client,
@@ -732,10 +742,11 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
 
         # Post extend button if eligible (natural expiry only, max 1 extension)
         if group_revoke_event.can_extend_expired_grant and group_revoke_event.thread_ts and group_revoke_event.extensions_count < 1:
+            extension_minutes = min(int(group_revoke_event.permission_duration.total_seconds() / 60), 60)
             extend_payload = slack_helpers.ExtendGrantButtonPayload(
                 requester_slack_id=group_revoke_event.requester.id,
                 expired_at=datetime.now(timezone.utc).isoformat(),
-                extension_duration_in_minutes=group_revoke_event.extension_duration_in_minutes,
+                extension_duration_in_minutes=extension_minutes,
                 extensions_count=group_revoke_event.extensions_count,
                 group_id=group_assignment.group_id,
                 group_name=group_assignment.group_name,
@@ -748,7 +759,7 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
                 channel=cfg.slack_channel_id,
                 thread_ts=group_revoke_event.thread_ts,
                 blocks=[slack_helpers.build_extend_grant_button(extend_payload).to_dict()],
-                text=f"Extend access ({group_revoke_event.extension_duration_in_minutes} min)",
+                text=f"Extend access ({extension_minutes} min)",
             )
             schedule.schedule_discard_extend_button_event(
                 schedule_client=scheduler_client,

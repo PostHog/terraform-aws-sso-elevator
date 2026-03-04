@@ -28,11 +28,9 @@ class TestConfigParsing:
                 "PermissionSet": "Admin",
                 "Approvers": "a@b.com",
                 "CanExtendExpiredGrant": True,
-                "ExtensionDurationInMinutes": 30,
             }
         )
         assert stmt.can_extend_expired_grant is True
-        assert stmt.extension_duration_in_minutes == 30
 
     def test_parse_statement_defaults_when_omitted(self):
         stmt = config.parse_statement(
@@ -44,7 +42,6 @@ class TestConfigParsing:
             }
         )
         assert stmt.can_extend_expired_grant is False
-        assert stmt.extension_duration_in_minutes == 15
 
     def test_parse_group_statement_with_extend_fields(self):
         stmt = config.parse_group_statement(
@@ -52,11 +49,9 @@ class TestConfigParsing:
                 "Resource": ["11111111-2222-3333-4444-555555555555"],
                 "Approvers": "a@b.com",
                 "CanExtendExpiredGrant": True,
-                "ExtensionDurationInMinutes": 45,
             }
         )
         assert stmt.can_extend_expired_grant is True
-        assert stmt.extension_duration_in_minutes == 45
 
     def test_parse_group_statement_defaults_when_omitted(self):
         stmt = config.parse_group_statement(
@@ -66,7 +61,6 @@ class TestConfigParsing:
             }
         )
         assert stmt.can_extend_expired_grant is False
-        assert stmt.extension_duration_in_minutes == 15
 
 
 # ---------------------------------------------------------------------------
@@ -81,19 +75,15 @@ class TestStatementModels:
             resource=frozenset(["111111111111"]),
             permission_set=frozenset(["Admin"]),
             can_extend_expired_grant=True,
-            extension_duration_in_minutes=20,
         )
         assert stmt.can_extend_expired_grant is True
-        assert stmt.extension_duration_in_minutes == 20
 
     def test_group_statement_extend_fields(self):
         stmt = GroupStatement(
             resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
             can_extend_expired_grant=True,
-            extension_duration_in_minutes=10,
         )
         assert stmt.can_extend_expired_grant is True
-        assert stmt.extension_duration_in_minutes == 10
 
 
 # ---------------------------------------------------------------------------
@@ -115,11 +105,9 @@ class TestEventModels:
             ),
             permission_duration=timedelta(hours=1),
             can_extend_expired_grant=True,
-            extension_duration_in_minutes=30,
             extensions_count=0,
         )
         assert event.can_extend_expired_grant is True
-        assert event.extension_duration_in_minutes == 30
         assert event.extensions_count == 0
 
     def test_revoke_event_backward_compat_defaults(self):
@@ -137,7 +125,6 @@ class TestEventModels:
             permission_duration=timedelta(hours=1),
         )
         assert event.can_extend_expired_grant is False
-        assert event.extension_duration_in_minutes == 15
         assert event.extensions_count == 0
 
     def test_group_revoke_event_with_extend_fields(self):
@@ -154,7 +141,6 @@ class TestEventModels:
             ),
             permission_duration=timedelta(hours=1),
             can_extend_expired_grant=True,
-            extension_duration_in_minutes=20,
             extensions_count=1,
         )
         assert event.can_extend_expired_grant is True
@@ -175,7 +161,6 @@ class TestEventModels:
             permission_duration=timedelta(hours=1),
         )
         assert event.can_extend_expired_grant is False
-        assert event.extension_duration_in_minutes == 15
         assert event.extensions_count == 0
 
 
@@ -302,6 +287,92 @@ class TestMaxExtensions:
 
 
 # ---------------------------------------------------------------------------
+# Extension duration computation: min(original_duration, 60)
+# ---------------------------------------------------------------------------
+
+
+class TestExtensionDurationComputation:
+    """Extension duration = min(permission_duration_in_minutes, 60)."""
+
+    def test_30min_session_gives_30min_extension(self):
+        permission_duration = timedelta(minutes=30)
+        extension_minutes = min(int(permission_duration.total_seconds() / 60), 60)
+        assert extension_minutes == 30
+
+    def test_4hr_session_gives_60min_extension(self):
+        permission_duration = timedelta(hours=4)
+        extension_minutes = min(int(permission_duration.total_seconds() / 60), 60)
+        assert extension_minutes == 60
+
+    def test_60min_session_gives_60min_extension(self):
+        permission_duration = timedelta(hours=1)
+        extension_minutes = min(int(permission_duration.total_seconds() / 60), 60)
+        assert extension_minutes == 60
+
+    @patch("revoker.schedule")
+    @patch("revoker.s3")
+    @patch("revoker.sso")
+    @patch("revoker.slack_helpers")
+    @patch("revoker.organizations")
+    def test_extend_button_payload_carries_correct_duration(self, mock_orgs, mock_slack_helpers, mock_sso, mock_s3, mock_schedule):
+        """Verify the revoker passes min(permission_duration, 60) to the button payload."""
+        import revoker
+
+        revoke_event = RevokeEvent(
+            schedule_name="test-schedule",
+            approver=entities.slack.User(id="A1", email="a@b.com", real_name="A"),
+            requester=entities.slack.User(id="R1", email="r@b.com", real_name="R"),
+            user_account_assignment=sso.UserAccountAssignment(
+                instance_arn="arn:aws:sso:::instance/ssoins-1234",
+                account_id="111111111111",
+                permission_set_arn="arn:aws:sso:::permissionSet/ssoins-1234/ps-5678",
+                user_principal_id="uid-123",
+            ),
+            permission_duration=timedelta(minutes=30),
+            permission_set_name="Admin",
+            account_name="Production",
+            can_extend_expired_grant=True,
+            extensions_count=0,
+            thread_ts="1234.5678",
+        )
+
+        mock_sso.delete_account_assignment_and_wait_for_result.return_value = MagicMock(request_id="req-1")
+        mock_sso.describe_permission_set.return_value = entities.aws.PermissionSet(
+            arn="arn:aws:sso:::permissionSet/ssoins-1234/ps-5678", name="Admin", description=None
+        )
+        mock_slack_helpers.get_message_from_timestamp.return_value = {"blocks": []}
+        mock_slack_helpers.HeaderSectionBlock.set_status.return_value = []
+        mock_slack_helpers.ExtendGrantButtonPayload = ExtendGrantButtonPayload
+        mock_slack_helpers.build_extend_grant_button = build_extend_grant_button
+
+        mock_cfg = MagicMock()
+        mock_cfg.post_update_to_slack = True
+        mock_cfg.slack_channel_id = "C123"
+        mock_cfg.access_ended_status = ":checkered_flag: *SESSION COMPLETE*"
+
+        slack_client = MagicMock()
+        slack_client.chat_postMessage.return_value = {"ts": "9999.0001"}
+
+        revoker.handle_scheduled_account_assignment_deletion(
+            revoke_event=revoke_event,
+            sso_client=MagicMock(),
+            cfg=mock_cfg,
+            scheduler_client=MagicMock(),
+            org_client=MagicMock(),
+            slack_client=slack_client,
+            identitystore_client=MagicMock(),
+        )
+
+        # Find the extend button post call and verify duration is 30 (not 60)
+        post_calls = slack_client.chat_postMessage.call_args_list
+        extend_calls = [c for c in post_calls if "extend_grant_button" in str(c)]
+        assert len(extend_calls) == 1
+        # Verify fallback text has correct duration
+        call_kwargs = extend_calls[0][1]
+        assert "30 min" in call_kwargs["text"]
+
+
+# ---------------------------------------------------------------------------
 # Extend button posting in revoker
 # ---------------------------------------------------------------------------
 
@@ -322,7 +393,6 @@ class TestExtendButtonPosting:
             permission_set_name="Admin",
             account_name="Production",
             can_extend_expired_grant=can_extend,
-            extension_duration_in_minutes=15,
             extensions_count=extensions_count,
             thread_ts=thread_ts,
         )
@@ -475,7 +545,6 @@ class TestGroupExtendButtonPosting:
             ),
             permission_duration=timedelta(hours=1),
             can_extend_expired_grant=can_extend,
-            extension_duration_in_minutes=15,
             extensions_count=extensions_count,
             thread_ts=thread_ts,
         )
