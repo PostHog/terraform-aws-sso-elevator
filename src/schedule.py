@@ -141,7 +141,6 @@ def schedule_revoke_event(  # noqa: PLR0913
     permission_set_name: str | None = None,
     account_name: str | None = None,
     can_extend_expired_grant: bool = False,
-    extension_duration_in_minutes: int = 15,
     extensions_count: int = 0,
 ) -> tuple[scheduler_type_defs.CreateScheduleOutputTypeDef, str]:
     """Schedule a revoke event.
@@ -162,7 +161,6 @@ def schedule_revoke_event(  # noqa: PLR0913
         permission_set_name=permission_set_name,
         account_name=account_name,
         can_extend_expired_grant=can_extend_expired_grant,
-        extension_duration_in_minutes=extension_duration_in_minutes,
         extensions_count=extensions_count,
     )
     logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
@@ -195,7 +193,6 @@ def schedule_group_revoke_event(  # noqa: PLR0913
     group_assignment: sso.GroupAssignment,
     thread_ts: str | None = None,
     can_extend_expired_grant: bool = False,
-    extension_duration_in_minutes: int = 15,
     extensions_count: int = 0,
 ) -> tuple[scheduler_type_defs.CreateScheduleOutputTypeDef, str]:
     """Schedule a group revoke event.
@@ -213,7 +210,6 @@ def schedule_group_revoke_event(  # noqa: PLR0913
         permission_duration=permission_duration,
         thread_ts=thread_ts,
         can_extend_expired_grant=can_extend_expired_grant,
-        extension_duration_in_minutes=extension_duration_in_minutes,
         extensions_count=extensions_count,
     )
     get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, group_assignment)

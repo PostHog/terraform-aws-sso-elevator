@@ -648,10 +648,11 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
 
         # Post extend button if eligible (natural expiry only, max 1 extension)
         if revoke_event.can_extend_expired_grant and revoke_event.thread_ts and revoke_event.extensions_count < 1:
+            extension_minutes = min(int(revoke_event.permission_duration.total_seconds() / 60), 60)
             extend_payload = slack_helpers.ExtendGrantButtonPayload(
                 requester_slack_id=revoke_event.requester.id,
                 expired_at=datetime.now(timezone.utc).isoformat(),
-                extension_duration_in_minutes=revoke_event.extension_duration_in_minutes,
+                extension_duration_in_minutes=extension_minutes,
                 extensions_count=revoke_event.extensions_count,
                 account_id=user_account_assignment.account_id,
                 permission_set_name=permission_set.name,
@@ -666,7 +667,7 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
                 channel=cfg.slack_channel_id,
                 thread_ts=revoke_event.thread_ts,
                 blocks=[slack_helpers.build_extend_grant_button(extend_payload).to_dict()],
-                text=f"Extend access ({revoke_event.extension_duration_in_minutes} min)",
+                text=f"Extend access ({extension_minutes} min)",
             )
             schedule.schedule_discard_extend_button_event(
                 schedule_client=scheduler_client,
@@ -732,10 +733,11 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
 
         # Post extend button if eligible (natural expiry only, max 1 extension)
         if group_revoke_event.can_extend_expired_grant and group_revoke_event.thread_ts and group_revoke_event.extensions_count < 1:
+            extension_minutes = min(int(group_revoke_event.permission_duration.total_seconds() / 60), 60)
             extend_payload = slack_helpers.ExtendGrantButtonPayload(
                 requester_slack_id=group_revoke_event.requester.id,
                 expired_at=datetime.now(timezone.utc).isoformat(),
-                extension_duration_in_minutes=group_revoke_event.extension_duration_in_minutes,
+                extension_duration_in_minutes=extension_minutes,
                 extensions_count=group_revoke_event.extensions_count,
                 group_id=group_assignment.group_id,
                 group_name=group_assignment.group_name,
@@ -748,7 +750,7 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
                 channel=cfg.slack_channel_id,
                 thread_ts=group_revoke_event.thread_ts,
                 blocks=[slack_helpers.build_extend_grant_button(extend_payload).to_dict()],
-                text=f"Extend access ({group_revoke_event.extension_duration_in_minutes} min)",
+                text=f"Extend access ({extension_minutes} min)",
             )
             schedule.schedule_discard_extend_button_event(
                 schedule_client=scheduler_client,

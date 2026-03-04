@@ -299,14 +299,6 @@ def execute_decision(  # noqa: PLR0913
 
     # Check if any matching statement enables extend expired grant
     can_extend = any(getattr(s, "can_extend_expired_grant", False) for s in decision.based_on_statements)
-    extension_duration = next(
-        (
-            getattr(s, "extension_duration_in_minutes", 15)
-            for s in decision.based_on_statements
-            if getattr(s, "can_extend_expired_grant", False)
-        ),
-        15,
-    )
 
     _, schedule_name = schedule.schedule_revoke_event(
         permission_duration=permission_duration,
@@ -318,7 +310,6 @@ def execute_decision(  # noqa: PLR0913
         permission_set_name=permission_set.name,
         account_name=account.name,
         can_extend_expired_grant=can_extend,
-        extension_duration_in_minutes=extension_duration,
         extensions_count=0,
     )
 
@@ -390,14 +381,6 @@ def execute_decision_on_group_request(  # noqa: PLR0913
 
     # Check if any matching statement enables extend expired grant
     can_extend = any(getattr(s, "can_extend_expired_grant", False) for s in decision.based_on_statements)
-    extension_duration = next(
-        (
-            getattr(s, "extension_duration_in_minutes", 15)
-            for s in decision.based_on_statements
-            if getattr(s, "can_extend_expired_grant", False)
-        ),
-        15,
-    )
 
     _, schedule_name = schedule.schedule_group_revoke_event(
         permission_duration=permission_duration,
@@ -413,7 +396,6 @@ def execute_decision_on_group_request(  # noqa: PLR0913
         ),
         thread_ts=thread_ts,
         can_extend_expired_grant=can_extend,
-        extension_duration_in_minutes=extension_duration,
         extensions_count=0,
     )
 

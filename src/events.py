@@ -20,7 +20,6 @@ class RevokeEvent(BaseModel):
     account_name: str | None = None
     # Extend expired grant fields
     can_extend_expired_grant: bool = False
-    extension_duration_in_minutes: int = 15
     extensions_count: int = 0
 
 
@@ -33,7 +32,6 @@ class GroupRevokeEvent(BaseModel):
     thread_ts: str | None = None
     # Extend expired grant fields
     can_extend_expired_grant: bool = False
-    extension_duration_in_minutes: int = 15
     extensions_count: int = 0
 
 
