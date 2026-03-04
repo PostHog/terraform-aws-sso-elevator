@@ -264,6 +264,9 @@ class RequestForAccessView:
         duration = timedelta(hours=hours, minutes=minutes)
 
         permission_set_name = jp.search(f"{cls.PERMISSION_SET_BLOCK_ID}.{cls.PERMISSION_SET_ACTION_ID}.selected_option.value", values)
+        if permission_set_name is None:
+            logger.warning("Modal submitted without a permission set selected, ignoring")
+            return []
         reason = jp.search(f"{cls.REASON_BLOCK_ID}.{cls.REASON_ACTION_ID}.value", values)
         requester_slack_id = jp.search("user.id", obj)
 

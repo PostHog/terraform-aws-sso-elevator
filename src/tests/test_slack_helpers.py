@@ -564,3 +564,13 @@ class TestParseMulti:
         obj = self._make_submission([])
         results = RequestForAccessView.parse_multi(obj)
         assert results == []
+
+    def test_none_permission_set_returns_empty(self):
+        """Modal submitted before permission set selected returns empty list."""
+        obj = self._make_submission(["111111111111"])
+        # Simulate permission set dropdown not yet selected (selected_option is None)
+        obj["view"]["state"]["values"][RequestForAccessView.PERMISSION_SET_BLOCK_ID][RequestForAccessView.PERMISSION_SET_ACTION_ID][
+            "selected_option"
+        ] = None
+        results = RequestForAccessView.parse_multi(obj)
+        assert results == []
