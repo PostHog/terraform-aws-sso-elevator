@@ -160,7 +160,7 @@ def create_account_assignment_and_wait_for_result(client: SSOAdminClient, assign
 
         result = retry_while(fn, condition=AccountAssignmentStatus.is_in_progress, timeout_seconds=-1)
     if AccountAssignmentStatus.is_failed(result):
-        e = errors.AccountAssignmentError("Failed to create account assignment.")
+        e = errors.AccountAssignmentError("Failed to create account assignment.", failure_reason=result.failure_reason)
         logger.exception(e, extra={"status": result})
         raise e
 
@@ -180,7 +180,7 @@ def delete_account_assignment_and_wait_for_result(client: SSOAdminClient, assign
         result = retry_while(fn, condition=AccountAssignmentStatus.is_in_progress, timeout_seconds=-1)
 
     if AccountAssignmentStatus.is_failed(result):
-        e = errors.AccountAssignmentError("Failed to delete account assignment.")
+        e = errors.AccountAssignmentError("Failed to delete account assignment.", failure_reason=result.failure_reason)
         logger.exception(e, extra={"status": result})
         raise e
     logger.info("Account assignment deletion finished successfully.")

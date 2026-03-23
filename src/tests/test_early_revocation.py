@@ -292,6 +292,21 @@ class TestEarlyRevocationAuthorization:
         assert result is True
 
 
+class TestAccountAssignmentErrorFailureReason:
+    """Tests for AccountAssignmentError carrying failure_reason."""
+
+    def test_failure_reason_preserved(self):
+        """failure_reason from SSO API is accessible on the exception."""
+        e = errors.AccountAssignmentError("Failed", failure_reason="Not supported policy arn:aws:iam::123:policy/foo")
+        assert e.failure_reason == "Not supported policy arn:aws:iam::123:policy/foo"
+        assert str(e) == "Failed"
+
+    def test_failure_reason_defaults_to_none(self):
+        """Backward-compatible: failure_reason is None when not provided."""
+        e = errors.AccountAssignmentError("Failed")
+        assert e.failure_reason is None
+
+
 class TestEarlyRevocationIdempotency:
     """Tests for idempotency in scheduled revocation.
 
