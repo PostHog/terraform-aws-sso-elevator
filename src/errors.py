@@ -12,7 +12,10 @@ import config
 class ConfigurationError(Exception): ...
 
 
-class AccountAssignmentError(ConfigurationError): ...
+class AccountAssignmentError(ConfigurationError):
+    def __init__(self, message: str, failure_reason: str | None = None) -> None:
+        super().__init__(message)
+        self.failure_reason = failure_reason
 
 
 class NotFound(ConfigurationError): ...

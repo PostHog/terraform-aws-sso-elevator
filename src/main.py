@@ -19,7 +19,7 @@ import schedule
 import slack_helpers
 import sso
 import statement
-from errors import SSOUserNotFound, handle_errors
+from errors import AccountAssignmentError, SSOUserNotFound, handle_errors
 
 logger = config.get_logger(service="main")
 
@@ -589,16 +589,25 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
         text=text,
     )
 
-    result = access_control.execute_decision(
-        decision=decision,
-        permission_set_name=request.permission_set_name,
-        account_id=request.account_id,
-        permission_duration=request.permission_duration,
-        approver=requester,
-        requester=requester,
-        reason=request.reason,
-        thread_ts=slack_response["ts"],
-    )
+    try:
+        result = access_control.execute_decision(
+            decision=decision,
+            permission_set_name=request.permission_set_name,
+            account_id=request.account_id,
+            permission_duration=request.permission_duration,
+            approver=requester,
+            requester=requester,
+            reason=request.reason,
+            thread_ts=slack_response["ts"],
+        )
+    except AccountAssignmentError as e:
+        reason = e.failure_reason or str(e)
+        client.chat_postMessage(
+            channel=cfg.slack_channel_id,
+            text=f"Failed to grant permissions: {reason}",
+            thread_ts=slack_response["ts"],
+        )
+        raise
 
     if result.granted:
         analytics.capture(
