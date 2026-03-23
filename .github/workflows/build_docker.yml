@@ -49,7 +49,7 @@ jobs:
           fi
     
       - name: Build and push requester image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           file: src/docker/Dockerfile.requester
@@ -58,7 +58,7 @@ jobs:
           provenance: false
 
       - name: Build and push revoker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           file: src/docker/Dockerfile.revoker
@@ -67,7 +67,7 @@ jobs:
           provenance: false
 
       - name: Build and push attribute syncer image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           file: src/docker/Dockerfile.attribute_syncer
