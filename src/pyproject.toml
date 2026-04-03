@@ -21,7 +21,8 @@ dev = [
     "boto3>=1.26.97",
     "slack-bolt>=1.26.0",
     "hypothesis[ghostwriter]>=6.71.0",
-    "ruff>=0.0.267",
+    "pre-commit>=4.0.0",
+    "ruff>=0.14.9",
 ]
 
 [build-system]
