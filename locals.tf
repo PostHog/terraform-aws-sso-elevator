@@ -63,21 +63,30 @@ locals {
       if !contains(var.attribute_sync_managed_groups, rule.group_name)
     ],
 
-    # Validate no overlap between attribute_sync_managed_groups and group_config
-    # Groups managed by attribute syncer should not be in group_config (used by revoker for JIT access)
-    # as this causes false "inconsistent assignment" warnings
+    # Validate no overlap between attribute_sync_managed_groups and Group-type config items
+    # Groups managed by attribute syncer should not be in config as this causes false "inconsistent assignment" warnings
     [for group_name in local.group_config_group_names :
-      "Group '${group_name}' is in both attribute_sync_managed_groups and group_config. This will cause false 'inconsistent assignment' warnings. Remove it from group_config if it should be managed by attribute syncer."
+      "Group '${group_name}' is in both attribute_sync_managed_groups and config. This will cause false 'inconsistent assignment' warnings. Remove it from config if it should be managed by attribute syncer."
       if contains(var.attribute_sync_managed_groups, group_name)
     ]
   )
 
-  # Extract group names from group_config (Resource field can be a string or list)
+  # Extract group names from Group-type config items (Resource field can be a string or list)
   group_config_group_names = distinct(flatten([
-    for stmt in var.group_config : (
-      try(tolist(stmt.Resource), [stmt.Resource])
-    )
+    for stmt in var.config : try(tolist(stmt.Resource), [stmt.Resource])
+    if lookup(stmt, "ResourceType", "Account") == "Group"
   ]))
+}
+
+check "group_statements_no_permission_set" {
+  assert {
+    condition = alltrue([
+      for item in var.config :
+      !contains(keys(item), "PermissionSet")
+      if lookup(item, "ResourceType", "Account") == "Group"
+    ])
+    error_message = "Group-type config items must not specify PermissionSet."
+  }
 }
 
 resource "random_string" "random" {

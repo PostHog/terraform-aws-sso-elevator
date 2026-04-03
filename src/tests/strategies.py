@@ -121,5 +121,7 @@ def group_statement_dict():
             "Approvers": st.one_of(st.emails(), st.lists(st.emails(), max_size=20)),
             "ApprovalIsNotRequired": st.booleans(),
             "AllowSelfApproval": st.booleans(),
+            "RequiredGroupMembership": st.one_of(st.just("some-group-id"), st.lists(st.just("some-group-id"), max_size=5)),
+            "CanExtendExpiredGrant": st.booleans(),
         },  # type: ignore # noqa: PGH003
     )

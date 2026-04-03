@@ -63,8 +63,14 @@ resource "aws_s3_object" "approval_config" {
   bucket = module.config_bucket.s3_bucket_id
   key    = "config/approval-config.json"
   content = jsonencode({
-    statements       = var.config
-    group_statements = var.group_config
+    statements = [
+      for item in var.config : item
+      if lookup(item, "ResourceType", "Account") != "Group"
+    ]
+    group_statements = [
+      for item in var.config : item
+      if lookup(item, "ResourceType", "Account") == "Group"
+    ]
   })
   content_type = "application/json"
 

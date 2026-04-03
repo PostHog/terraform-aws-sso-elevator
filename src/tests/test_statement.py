@@ -1,4 +1,5 @@
 from statement import (
+    GroupStatement,
     Statement,
     get_accounts_for_user,
     get_eligible_statements_for_user,
@@ -346,3 +347,65 @@ class TestGetPermissionSetsForAccountsAndUser:
         # With admin group
         result = get_permission_sets_for_accounts_and_user(statements, ["111111111111"], {"admin-group"})
         assert result == {"ReadOnlyAccess", "AdminAccess"}
+
+
+# --- GroupStatement eligibility tests ---
+
+
+class TestIsGroupStatementEligibleForUser:
+    def test_empty_required_group_membership_is_eligible_for_all(self):
+        stmt = GroupStatement(resource=frozenset(["11111111-2222-3333-4444-555555555555"]))
+        assert is_statement_eligible_for_user(stmt, set()) is True
+        assert is_statement_eligible_for_user(stmt, {"group-1"}) is True
+
+    def test_user_in_required_group_is_eligible(self):
+        stmt = GroupStatement(
+            resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+            required_group_membership=frozenset(["group-a", "group-b"]),
+        )
+        assert is_statement_eligible_for_user(stmt, {"group-a"}) is True
+        assert is_statement_eligible_for_user(stmt, {"group-b"}) is True
+        assert is_statement_eligible_for_user(stmt, {"group-a", "group-b"}) is True
+        assert is_statement_eligible_for_user(stmt, {"group-a", "other"}) is True
+
+    def test_user_not_in_required_group_is_not_eligible(self):
+        stmt = GroupStatement(
+            resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+            required_group_membership=frozenset(["group-a"]),
+        )
+        assert is_statement_eligible_for_user(stmt, set()) is False
+        assert is_statement_eligible_for_user(stmt, {"other-group"}) is False
+
+
+class TestGetEligibleGroupStatementsForUser:
+    def test_filters_group_statements_by_user_group_ids(self):
+        restricted = GroupStatement(
+            resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+            approvers=frozenset(["admin@example.com"]),
+            required_group_membership=frozenset(["admin-group"]),
+        )
+        unrestricted = GroupStatement(
+            resource=frozenset(["22222222-3333-4444-5555-666666666666"]),
+            approvers=frozenset(["anyone@example.com"]),
+        )
+        statements = frozenset([restricted, unrestricted])
+
+        # User not in admin group sees only unrestricted
+        result = get_eligible_statements_for_user(statements, {"other-group"})
+        assert result == frozenset([unrestricted])
+
+        # User in admin group sees both
+        result = get_eligible_statements_for_user(statements, {"admin-group"})
+        assert result == frozenset([restricted, unrestricted])
+
+    def test_returns_all_when_no_group_restriction(self):
+        s1 = GroupStatement(
+            resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+            approvers=frozenset(["a@example.com"]),
+        )
+        s2 = GroupStatement(
+            resource=frozenset(["22222222-3333-4444-5555-666666666666"]),
+            approvers=frozenset(["b@example.com"]),
+        )
+        result = get_eligible_statements_for_user(frozenset([s1, s2]), set())
+        assert result == frozenset([s1, s2])

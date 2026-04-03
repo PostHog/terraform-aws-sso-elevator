@@ -10,7 +10,7 @@ Each configuration rule specifies which resource(s) the rule applies to, which p
 
 The fields in the configuration dictionary are:
 
-- **ResourceType**: This field specifies the type of resource being requested, such as "Account." As of now, the only supported value is "Account."
+- **ResourceType**: This field specifies the type of resource being requested. Supported values are `"Account"` (default) and `"Group"` (for SSO group membership; see [GROUP_ACCESS.md](GROUP_ACCESS.md)).
 - **Resource**: This field defines the specific resource(s) being requested. It accepts either a single string or a list of strings. Setting this field to "*" allows the rule to match all resources associated with the specified `ResourceType`.
 - **PermissionSet**: Here, you indicate the permission set(s) being requested. This can be either a single string or a list of strings. You can specify permission sets by **name** (e.g., `"AdministratorAccess"`) or by **ARN** (e.g., `"arn:aws:sso:::permissionSet/ssoins-1234567890abcdef/ps-1234567890abcdef"`). Using ARNs is recommended for Terraform users as it reduces API calls and allows direct reference to `aws_ssoadmin_permission_set.*.arn`. If set to "*", the rule matches all permission sets available for the defined `Resource` and `ResourceType`.
 - **Approvers**: This field lists the potential approvers for the request. It accepts either a single string or a list of strings representing different approvers.

@@ -10,38 +10,60 @@ The basic logic for access, configuration, and Slack integration remains the sam
 
 ### Configuration
 
-To enable the Group Assignments Mode, provide the module with the `group_config` Terraform variable:
+To enable the Group Assignments Mode, add items with `"ResourceType": "Group"` to the `config` Terraform variable:
 
 ```hcl
-group_config = [
+config = [
+    # Account-based rules (ResourceType defaults to "Account")
     {
+      "ResourceType" : "Account",
+      "Resource" : ["111111111111"],
+      "PermissionSet" : "AdministratorAccess",
+      "Approvers" : ["admin@corp.com"],
+    },
+
+    # Group-based rules
+    {
+      "ResourceType" : "Group",
       "Resource" : ["99999999-8888-7777-6666-555555555555"], #ManagementAccountAdmins
-      "Approvers" : [
-        "email@gmail.com"
-      ]
-      "ApprovalIsNotRequired": true
+      "Approvers" : ["email@gmail.com"],
+      "ApprovalIsNotRequired": true,
     },
     {
+      "ResourceType" : "Group",
       "Resource" : ["11111111-2222-3333-4444-555555555555"], #prod read only
-      "Approvers" : [
-        "email@gmail.com"
-      ]
+      "Approvers" : ["email@gmail.com"],
       "AllowSelfApproval" : true,
     },
     {
+      "ResourceType" : "Group",
       "Resource" : ["44445555-3333-2222-1111-555557777777"], #ProdAdminAccess
-      "Approvers" : [
-        "email@gmail.com"
-      ],
+      "Approvers" : ["email@gmail.com"],
       "ApproverGroups" : ["SAZ94GDB8"],  # Slack usergroup ID
+      "RequiredGroupMembership" : ["11111111-2222-3333-4444-555555555555"],  # Only SRE team can request
+      "CanExtendExpiredGrant" : true,
     },
 ]
 ```
 
+### Supported Fields for Group Rules
+
+Group-type config items support all the same approval fields as account rules, except `PermissionSet` (which does not apply to groups):
+
+- **ResourceType**: Must be `"Group"`.
+- **Resource**: SSO group ID(s) that users can request membership in.
+- **Approvers**: Email address(es) of approvers.
+- **ApproverGroups**: Slack usergroup ID(s) whose members can approve.
+- **AllowSelfApproval**: Whether a requester who is also an approver can self-approve.
+- **ApprovalIsNotRequired**: Whether requests are auto-approved without any approver.
+- **RequiredGroupMembership**: Restrict who can request access to users in specific SSO group(s).
+- **CanExtendExpiredGrant**: Whether users can extend their access after it expires.
+
 ### Key Differences from Account Configuration
 
-- **ResourceType** is not required for group access configurations.
-- In the **Resource** field, you must provide group IDs instead of account IDs.
+- **ResourceType** must be set to `"Group"`.
+- **Resource** contains SSO group IDs instead of AWS account IDs.
+- **PermissionSet** is not applicable and must not be specified.
 
 The Elevator will only work with groups specified in the configuration.
 
@@ -282,4 +304,4 @@ Remove all attribute sync configuration:
 
 6. **Error Handling**: If an error occurs processing one group or user, the syncer continues with others and reports errors in the summary notification.
 
-7. **No Overlap with group_config**: Groups in `attribute_sync_managed_groups` must NOT also appear in `group_config`. The attribute syncer adds users permanently based on attributes, while `group_config` is for JIT (just-in-time) access with scheduled revocation. If the same group is in both, the revoker will see attribute-synced users as "inconsistent assignments" and warn about them. Terraform will fail with a validation error if overlap is detected.
+7. **No Overlap with Group-type config items**: Groups in `attribute_sync_managed_groups` must NOT also appear as `"ResourceType": "Group"` items in `config`. The attribute syncer adds users permanently based on attributes, while Group-type config items are for JIT (just-in-time) access with scheduled revocation. If the same group is in both, the revoker will see attribute-synced users as "inconsistent assignments" and warn about them. Terraform will fail with a validation error if overlap is detected.

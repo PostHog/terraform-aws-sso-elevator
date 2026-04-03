@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from enum import Enum
-from typing import Annotated, FrozenSet, Union
+from typing import Annotated, FrozenSet, TypeVar, Union
 
 from pydantic import EmailStr, Field
 
@@ -44,6 +46,32 @@ class Statement(BaseStatement):
         return account_match and ps_match
 
 
+class OUStatement(BaseStatement):
+    resource_type: ResourceType = Field(default=ResourceType.OU, frozen=True)
+    resource: FrozenSet[Union[AWSOUName, WildCard]]
+
+
+AWSSSOGroupID = Annotated[
+    str, Field(pattern=r"^([0-9a-f]{10}-)?[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$")
+]
+
+
+class GroupStatement(BaseModel):
+    resource: FrozenSet[AWSSSOGroupID]
+    allow_self_approval: bool | None = None
+    approval_is_not_required: bool | None = None
+    approvers: FrozenSet[EmailStr] = Field(default_factory=frozenset)
+    approver_groups: FrozenSet[str] = Field(default_factory=frozenset)
+    required_group_membership: FrozenSet[str] = Field(default_factory=frozenset)
+    can_extend_expired_grant: bool = False
+
+    def affects(self, group_id: str) -> bool:  # noqa: ANN101
+        return group_id in self.resource
+
+
+# --- Utility functions ---
+
+
 def get_affected_statements(
     statements: FrozenSet[Statement],
     account_id: str,
@@ -51,6 +79,10 @@ def get_affected_statements(
     permission_set_arn: str | None = None,
 ) -> FrozenSet[Statement]:
     return frozenset(statement for statement in statements if statement.affects(account_id, permission_set_name, permission_set_arn))
+
+
+def get_affected_group_statements(statements: FrozenSet[GroupStatement], group_id: str) -> FrozenSet[GroupStatement]:
+    return frozenset(statement for statement in statements if statement.affects(group_id))
 
 
 def get_permission_sets_for_account(statements: FrozenSet[Statement], account_id: str) -> set[str]:
@@ -64,7 +96,7 @@ def get_permission_sets_for_account(statements: FrozenSet[Statement], account_id
     return permission_sets
 
 
-def is_statement_eligible_for_user(statement: BaseStatement, user_group_ids: set[str]) -> bool:
+def is_statement_eligible_for_user(statement: BaseStatement | GroupStatement, user_group_ids: set[str]) -> bool:
     """Check if user is eligible for a statement based on group membership.
 
     If required_group_membership is empty, statement is available to all (backwards compatible).
@@ -75,7 +107,10 @@ def is_statement_eligible_for_user(statement: BaseStatement, user_group_ids: set
     return bool(statement.required_group_membership & user_group_ids)
 
 
-def get_eligible_statements_for_user(statements: FrozenSet[Statement], user_group_ids: set[str]) -> FrozenSet[Statement]:
+_S = TypeVar("_S", Statement, GroupStatement)
+
+
+def get_eligible_statements_for_user(statements: FrozenSet[_S], user_group_ids: set[str]) -> FrozenSet[_S]:
     """Filter statements to only those the user is eligible for based on group membership."""
     return frozenset(s for s in statements if is_statement_eligible_for_user(s, user_group_ids))
 
@@ -134,29 +169,3 @@ def get_permission_sets_for_accounts_and_user(
             result = result & ps
 
     return result if result is not None else set()
-
-
-class OUStatement(BaseStatement):
-    resource_type: ResourceType = Field(default=ResourceType.OU, frozen=True)
-    resource: FrozenSet[Union[AWSOUName, WildCard]]
-
-
-AWSSSOGroupID = Annotated[
-    str, Field(pattern=r"^([0-9a-f]{10}-)?[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$")
-]
-
-
-class GroupStatement(BaseModel):
-    resource: FrozenSet[AWSSSOGroupID]
-    allow_self_approval: bool | None = None
-    approval_is_not_required: bool | None = None
-    approvers: FrozenSet[EmailStr] = Field(default_factory=frozenset)
-    approver_groups: FrozenSet[str] = Field(default_factory=frozenset)
-    can_extend_expired_grant: bool = False
-
-    def affects(self, group_id: str) -> bool:  # noqa: ANN101
-        return group_id in self.resource
-
-
-def get_affected_group_statements(statements: FrozenSet[GroupStatement], group_id: str) -> FrozenSet[GroupStatement]:
-    return frozenset(statement for statement in statements if statement.affects(group_id))

@@ -80,13 +80,7 @@ variable "sso_instance_arn" {
 }
 
 variable "config" {
-  description = "value for the SSO Elevator config"
-  type        = any
-  default     = []
-}
-
-variable "group_config" {
-  description = "value for the SSO Elevator group config"
+  description = "SSO Elevator config. Each item specifies access rules distinguished by ResourceType: 'Account' (default) for AWS account access with PermissionSet, or 'Group' for SSO group membership."
   type        = any
   default     = []
 }

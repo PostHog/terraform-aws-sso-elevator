@@ -106,6 +106,7 @@ def parse_group_statement(_dict: dict) -> GroupStatement:
             "approver_groups": to_set_if_list_or_str(_dict.get("ApproverGroups", set())),
             "approval_is_not_required": _dict.get("ApprovalIsNotRequired"),
             "allow_self_approval": _dict.get("AllowSelfApproval"),
+            "required_group_membership": to_set_if_list_or_str(_dict.get("RequiredGroupMembership", set())),
             "can_extend_expired_grant": _dict.get("CanExtendExpiredGrant", False),
         }
     )

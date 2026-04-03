@@ -86,9 +86,8 @@ def make_decision_on_access_request(  # noqa: PLR0911, PLR0913
             Used for checking self-approval eligibility via group membership.
     """
     # Filter statements by user's group membership eligibility if user_group_ids provided
-    # This is only applicable to Statement (not GroupStatement)
-    if user_group_ids is not None and isinstance(statements, frozenset) and all(isinstance(s, Statement) for s in statements):
-        statements = get_eligible_statements_for_user(statements, user_group_ids)  # type: ignore # noqa: PGH003
+    if user_group_ids is not None:
+        statements = get_eligible_statements_for_user(statements, user_group_ids)
 
     affected_statements = determine_affected_statements(statements, account_id, permission_set_name, group_id, permission_set_arn)
 

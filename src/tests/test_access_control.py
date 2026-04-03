@@ -11,7 +11,7 @@ from access_control import (
     make_decision_on_access_request,
     make_decision_on_approve_request,
 )
-from statement import Statement
+from statement import GroupStatement, Statement
 
 # ruff: noqa: ANN201, ANN001
 
@@ -1175,6 +1175,117 @@ class TestGroupBasedAccessFiltering:
             statements=statements,
             account_id="111111111111",
             permission_set_name="AdministratorAccess",
+            requester_email="requester@example.com",
+            user_group_ids={"admin-group"},
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+        assert decision.approvers == frozenset(["admin-approver@example.com", "regular-approver@example.com"])
+
+
+class TestGroupStatementGroupBasedAccessFiltering:
+    """Tests for required_group_membership filtering on GroupStatements."""
+
+    def test_user_in_required_group_gets_normal_decision(self):
+        statements = frozenset(
+            [
+                GroupStatement(
+                    resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+                    approvers=frozenset(["approver@example.com"]),
+                    required_group_membership=frozenset(["eng-group"]),
+                )
+            ]
+        )
+        decision = make_decision_on_access_request(
+            statements=statements,
+            group_id="11111111-2222-3333-4444-555555555555",
+            requester_email="requester@example.com",
+            user_group_ids={"eng-group"},
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+        assert decision.approvers == frozenset(["approver@example.com"])
+
+    def test_user_not_in_required_group_gets_no_statements(self):
+        statements = frozenset(
+            [
+                GroupStatement(
+                    resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+                    approvers=frozenset(["approver@example.com"]),
+                    required_group_membership=frozenset(["eng-group"]),
+                )
+            ]
+        )
+        decision = make_decision_on_access_request(
+            statements=statements,
+            group_id="11111111-2222-3333-4444-555555555555",
+            requester_email="requester@example.com",
+            user_group_ids={"other-group"},
+        )
+        assert decision.reason == DecisionReason.NoStatements
+        assert decision.grant is False
+
+    def test_empty_required_group_membership_is_backwards_compatible(self):
+        statements = frozenset(
+            [
+                GroupStatement(
+                    resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+                    approvers=frozenset(["approver@example.com"]),
+                )
+            ]
+        )
+        decision = make_decision_on_access_request(
+            statements=statements,
+            group_id="11111111-2222-3333-4444-555555555555",
+            requester_email="requester@example.com",
+            user_group_ids=set(),
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+
+    def test_none_user_group_ids_skips_filtering(self):
+        statements = frozenset(
+            [
+                GroupStatement(
+                    resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+                    approvers=frozenset(["approver@example.com"]),
+                    required_group_membership=frozenset(["eng-group"]),
+                )
+            ]
+        )
+        decision = make_decision_on_access_request(
+            statements=statements,
+            group_id="11111111-2222-3333-4444-555555555555",
+            requester_email="requester@example.com",
+            user_group_ids=None,
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+
+    def test_multiple_group_statements_only_eligible_ones_considered(self):
+        statements = frozenset(
+            [
+                GroupStatement(
+                    resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+                    approvers=frozenset(["admin-approver@example.com"]),
+                    required_group_membership=frozenset(["admin-group"]),
+                ),
+                GroupStatement(
+                    resource=frozenset(["11111111-2222-3333-4444-555555555555"]),
+                    approvers=frozenset(["regular-approver@example.com"]),
+                ),
+            ]
+        )
+        # User not in admin group sees only regular-approver
+        decision = make_decision_on_access_request(
+            statements=statements,
+            group_id="11111111-2222-3333-4444-555555555555",
+            requester_email="requester@example.com",
+            user_group_ids={"other-group"},
+        )
+        assert decision.reason == DecisionReason.RequiresApproval
+        assert decision.approvers == frozenset(["regular-approver@example.com"])
+
+        # User in admin group sees both
+        decision = make_decision_on_access_request(
+            statements=statements,
+            group_id="11111111-2222-3333-4444-555555555555",
             requester_email="requester@example.com",
             user_group_ids={"admin-group"},
         )

@@ -62,6 +62,18 @@ class TestConfigParsing:
         )
         assert stmt.can_extend_expired_grant is False
 
+    def test_parse_group_statement_with_extend_and_required_group(self):
+        stmt = config.parse_group_statement(
+            {
+                "Resource": ["11111111-2222-3333-4444-555555555555"],
+                "Approvers": "a@b.com",
+                "CanExtendExpiredGrant": True,
+                "RequiredGroupMembership": ["eng-group"],
+            }
+        )
+        assert stmt.can_extend_expired_grant is True
+        assert stmt.required_group_membership == frozenset(["eng-group"])
+
 
 # ---------------------------------------------------------------------------
 # Statement model fields

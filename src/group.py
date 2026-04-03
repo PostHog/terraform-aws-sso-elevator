@@ -42,6 +42,19 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
 
     group = sso.describe_group(identity_store_id, request.group_id, identity_store_client)
 
+    # Get user's SSO group memberships for RequiredGroupMembership filtering
+    user_principal_id, _ = sso.get_user_principal_id_by_email(
+        identity_store_client=identity_store_client,
+        identity_store_id=identity_store_id,
+        email=requester.email,
+        cfg=cfg,
+    )
+    user_group_ids = sso.get_user_group_ids(
+        identity_store_client=identity_store_client,
+        identity_store_id=identity_store_id,
+        user_principal_id=user_principal_id,
+    )
+
     # Create a resolver function for self-approval via group membership
     resolver_cache: dict[frozenset[str], set[str]] = {}
 
@@ -59,6 +72,7 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
         cfg.group_statements,
         requester_email=requester.email,
         group_id=request.group_id,
+        user_group_ids=user_group_ids,
         requester_slack_id=request.requester_slack_id,
         approver_group_resolver=approver_group_resolver,
     )

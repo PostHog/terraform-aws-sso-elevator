@@ -291,6 +291,27 @@ def test_config_statement_parsing_with_s3(mock_s3_client, monkeypatch):
     assert "111111111111" in statement.resource
 
 
+def test_parse_group_statement_with_required_group_membership():
+    stmt = config.parse_group_statement(
+        {
+            "Resource": ["11e111e1-e111-11ee-e111-1e11e1ee11e1"],
+            "Approvers": "example@gmail.com",
+            "RequiredGroupMembership": ["group-a", "group-b"],
+        }
+    )
+    assert stmt.required_group_membership == frozenset(["group-a", "group-b"])
+
+
+def test_parse_group_statement_required_group_membership_defaults_to_empty():
+    stmt = config.parse_group_statement(
+        {
+            "Resource": ["11e111e1-e111-11ee-e111-1e11e1ee11e1"],
+            "Approvers": "example@gmail.com",
+        }
+    )
+    assert stmt.required_group_membership == frozenset()
+
+
 def test_config_group_statement_parsing_with_s3(mock_s3_client, monkeypatch):
     """Verify group_statement parsing still works correctly with S3-loaded data."""
     import boto3
