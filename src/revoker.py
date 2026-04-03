@@ -15,6 +15,7 @@ import analytics
 import config
 import entities
 import errors
+import event_publisher
 import organizations
 import s3
 import schedule
@@ -216,6 +217,14 @@ def handle_early_account_revocation(  # noqa: PLR0913
             sso_user_principal_id=user_account_assignment.user_principal_id,
             audit_entry_type="account",
         ),
+    )
+
+    event_publisher.publish_access_event(
+        action="revoke",
+        account_id=user_account_assignment.account_id,
+        permission_set_name=permission_set.name,
+        permission_set_arn=user_account_assignment.permission_set_arn,
+        user_principal_id=user_account_assignment.user_principal_id,
     )
 
     analytics.capture(
@@ -449,6 +458,14 @@ def handle_account_assignment_deletion(  # noqa: PLR0913
         ),
     )
 
+    event_publisher.publish_access_event(
+        action="revoke",
+        account_id=account_assignment.account_id,
+        permission_set_name=permission_set.name,
+        permission_set_arn=account_assignment.permission_set_arn,
+        user_principal_id=account_assignment.user_principal_id,
+    )
+
     if cfg.post_update_to_slack:
         try:
             account = organizations.describe_account(org_client, account_assignment.account_id)
@@ -630,6 +647,15 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
             audit_entry_type="account",
         ),
     )
+
+    event_publisher.publish_access_event(
+        action="revoke",
+        account_id=user_account_assignment.account_id,
+        permission_set_name=permission_set.name,
+        permission_set_arn=user_account_assignment.permission_set_arn,
+        user_principal_id=user_account_assignment.user_principal_id,
+    )
+
     schedule.delete_schedule(scheduler_client, revoke_event.schedule_name)
 
     if cfg.post_update_to_slack:

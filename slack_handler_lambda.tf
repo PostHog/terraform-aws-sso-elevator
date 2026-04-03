@@ -78,6 +78,9 @@ module "access_requester_slack_handler" {
     var.posthog_api_key != "" ? {
       POSTHOG_API_KEY = var.posthog_api_key
       POSTHOG_HOST    = var.posthog_host
+    } : {},
+    var.event_bus_arn != "" ? {
+      EVENT_BUS_ARN = var.event_bus_arn
     } : {}
   )
 
@@ -247,6 +250,15 @@ data "aws_iam_policy_document" "slack_handler" {
       module.config_bucket.s3_bucket_arn,
       "${module.config_bucket.s3_bucket_arn}/*"
     ]
+  }
+
+  dynamic "statement" {
+    for_each = var.event_bus_arn != "" ? [1] : []
+    content {
+      effect    = "Allow"
+      actions   = ["events:PutEvents"]
+      resources = [var.event_bus_arn]
+    }
   }
 }
 
