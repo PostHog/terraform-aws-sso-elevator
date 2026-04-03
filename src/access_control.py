@@ -6,6 +6,7 @@ import boto3
 
 import config
 import entities
+import event_publisher
 import organizations
 import s3
 import schedule
@@ -295,6 +296,14 @@ def execute_decision(  # noqa: PLR0913
             audit_entry_type="account",
             secondary_domain_was_used=secondary_domain_was_used,
         ),
+    )
+
+    event_publisher.publish_access_event(
+        action="grant",
+        account_id=account_id,
+        permission_set_name=permission_set.name,
+        permission_set_arn=permission_set.arn,
+        user_principal_id=sso_user_principal_id,
     )
 
     # Check if any matching statement enables extend expired grant

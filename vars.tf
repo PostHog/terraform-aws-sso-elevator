@@ -495,3 +495,9 @@ variable "posthog_host" {
   type        = string
   default     = "https://us.i.posthog.com"
 }
+
+variable "event_bus_arn" {
+  description = "EventBridge bus ARN to publish access change events to. If empty, no events are published."
+  type        = string
+  default     = ""
+}

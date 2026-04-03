@@ -158,6 +158,7 @@ class Config(BaseSettings):
     config_bucket_name: str = "sso-elevator-config"
     config_s3_key: str = ""
     cache_enabled: bool = True
+    event_bus_arn: str = ""
 
     good_result_emoji: str = ":large_green_circle:"
     allow_anyone_to_end_session_early: bool = False
