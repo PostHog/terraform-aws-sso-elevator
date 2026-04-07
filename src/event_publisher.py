@@ -57,7 +57,7 @@ def publish_access_event(
                 {
                     "Source": "sso-elevator",
                     "DetailType": "AccessChange",
-                    "EventBusArn": bus_arn,
+                    "EventBusName": bus_arn,
                     "Detail": json.dumps(detail),
                 }
             ]
@@ -74,7 +74,7 @@ def publish_access_event(
                 permission_set_name,
                 account_id,
             )
-    except ClientError:
+    except Exception:
         logger.exception(
             "Error publishing EventBridge event",
             extra={"detail": detail},
