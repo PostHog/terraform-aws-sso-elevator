@@ -30,7 +30,7 @@ class BaseModel(PydanticBaseModel):
     def dict(self, *args, **kwargs) -> dict:  # noqa: ANN101, ANN003, ANN002, ARG002
         """Converts instance to dict representation of it. Workaround for https://github.com/pydantic/pydantic/issues/1090"""
         # Manually convert to avoid Pydantic serialization issues with frozensets of frozen models
-        return _convert_to_serializable(self)
+        return _convert_to_serializable(self)  # type: ignore[return-value]
 
     def json(self, *args, **kwargs) -> str:  # noqa: ANN101, ANN003, ANN002
         """Converts instance to JSON string. Compatibility wrapper for Pydantic v2."""
@@ -38,11 +38,11 @@ class BaseModel(PydanticBaseModel):
         return self.model_dump_json(*args, **kwargs)
 
 
-def json_default(o: object) -> str | dict:
+def json_default(o: object) -> str | dict | list:
     if isinstance(o, PydanticBaseModel):
         return o.dict()
     elif dataclasses.is_dataclass(o):
-        return dataclasses.asdict(o)
+        return dataclasses.asdict(o)  # type: ignore[arg-type]
     elif isinstance(o, enum.Enum):
         return o.value
     return str(o)

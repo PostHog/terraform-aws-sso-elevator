@@ -292,7 +292,7 @@ def set_cached_permission_sets(
         logger.warning(f"Failed to cache permission sets: {e}", extra={"error": str(e)})
 
 
-def _compute_data_hash(data: T) -> str:
+def _compute_data_hash(data: object) -> str:
     """Compute SHA256 hash of data for comparison.
 
     Args:
@@ -303,7 +303,7 @@ def _compute_data_hash(data: T) -> str:
     """
     try:
         # Convert to JSON string with sorted keys for consistent hashing
-        json_str = json.dumps([item.dict() if hasattr(item, "dict") else item for item in data], sort_keys=True)
+        json_str = json.dumps([item.dict() if hasattr(item, "dict") else item for item in data], sort_keys=True)  # pyright: ignore[reportGeneralTypeIssues]
         return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
     except Exception as e:
         logger.warning(f"Failed to compute hash: {e}")

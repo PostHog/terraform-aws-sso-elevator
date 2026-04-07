@@ -46,7 +46,7 @@ class TestPublishAccessEvent:
 
         assert entry["Source"] == "sso-elevator"
         assert entry["DetailType"] == "AccessChange"
-        assert entry["EventBusArn"] == "arn:aws:events:us-east-1:111111111111:event-bus/sso-elevator-events"
+        assert entry["EventBusName"] == "arn:aws:events:us-east-1:111111111111:event-bus/sso-elevator-events"
 
         detail = json.loads(entry["Detail"])
         assert detail["action"] == "grant"

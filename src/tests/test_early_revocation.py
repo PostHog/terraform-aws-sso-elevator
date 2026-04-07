@@ -99,8 +99,8 @@ class TestEarlyRevokeModal:
         assert modal.callback_id == EarlyRevokeModal.CALLBACK_ID
         assert modal.type == "modal"
         assert modal.private_metadata == '{"test": "data"}'
-        assert modal.submit.text == "Revoke"
-        assert modal.close.text == "Cancel"
+        assert modal.submit.text == "Revoke"  # type: ignore[union-attr]
+        assert modal.close.text == "Cancel"  # type: ignore[union-attr]
 
     def test_modal_build_for_group_access(self):
         """Modal builds correctly for group access revocation."""
@@ -129,7 +129,7 @@ class TestEarlyRevokeModal:
                 break
 
         assert reason_block is not None
-        assert reason_block.optional is True
+        assert reason_block.optional is True  # type: ignore[attr-defined]
 
 
 class TestEarlyRevokeModalPayload:
@@ -326,7 +326,7 @@ class TestEarlyRevocationIdempotency:
                 "Message": "Account assignment not found",
             }
         }
-        conflict_exception = botocore.exceptions.ClientError(error_response, "DeleteAccountAssignment")
+        conflict_exception = botocore.exceptions.ClientError(error_response, "DeleteAccountAssignment")  # type: ignore[arg-type]
 
         # Verify the exception has the expected structure
         import jmespath as jp
@@ -344,7 +344,7 @@ class TestEarlyRevocationIdempotency:
                 "Message": "Membership not found",
             }
         }
-        resource_not_found = botocore.exceptions.ClientError(error_response, "DeleteGroupMembership")
+        resource_not_found = botocore.exceptions.ClientError(error_response, "DeleteGroupMembership")  # type: ignore[arg-type]
 
         # Verify the exception has the expected structure
         import jmespath as jp
@@ -370,7 +370,7 @@ class TestBuildEarlyRevokeButton:
 
         assert button_block.block_id == "early_revoke_button"
         assert len(button_block.elements) == 1
-        assert button_block.elements[0].action_id == ApproverAction.EarlyRevoke.value
+        assert button_block.elements[0].action_id == ApproverAction.EarlyRevoke.value  # type: ignore[union-attr]
 
     def test_button_value_is_json(self):
         """Button value is valid JSON containing payload data."""
@@ -384,7 +384,7 @@ class TestBuildEarlyRevokeButton:
         button_block = slack_helpers.build_early_revoke_button(payload)
 
         # Value should be valid JSON
-        value = button_block.elements[0].value
+        value = button_block.elements[0].value  # type: ignore[union-attr]
         parsed = json.loads(value)
 
         assert parsed["schedule_name"] == "revoker-2024-01-15-10-30-00"

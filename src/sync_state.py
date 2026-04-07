@@ -458,14 +458,14 @@ def _fetch_users_from_identity_store(
                 full_user = identity_store_client.describe_user(
                     IdentityStoreId=identity_store_id,
                     UserId=user_id,
-                    Extensions=["aws:identitystore:enterprise"],
+                    Extensions=["aws:identitystore:enterprise"],  # type: ignore[call-arg]
                 )
             except Exception as e:
                 logger.exception(f"Failed to describe user {user_id}: {e}")
                 full_user = user
 
-            extracted_attrs = _extract_user_attributes(full_user)
-            user_email = _extract_user_email(full_user)
+            extracted_attrs = _extract_user_attributes(full_user)  # type: ignore[arg-type]
+            user_email = _extract_user_email(full_user)  # type: ignore[arg-type]
             # Log raw user data keys for debugging attribute extraction
             logger.debug(
                 f"Raw user data keys for '{mask_email(user_email)}': {list(full_user.keys())}, "

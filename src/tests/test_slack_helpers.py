@@ -70,7 +70,7 @@ class TestGetMaxDurationBlock:
         options = get_max_duration_block(cfg)
 
         # Option.text can be a PlainTextObject or string depending on slack-sdk version
-        texts = [opt.text if isinstance(opt.text, str) else opt.text.text for opt in options]
+        texts = [opt.text if isinstance(opt.text, str) else opt.text.text for opt in options]  # type: ignore[union-attr]
         assert texts == ["15 min", "30 min", "1 hour", "2 hours", "4 hours", "8 hours", "12 hours", "24 hours"]
 
     def test_value_is_hhmm_format(self):
@@ -96,7 +96,7 @@ class TestGetMaxDurationBlock:
 
     def test_small_max_includes_at_least_max(self):
         """Even with small max like 0.5h, max is included."""
-        cfg = _make_config(max_hours=0.5)
+        cfg = _make_config(max_hours=0.5)  # type: ignore[arg-type]
         options = get_max_duration_block(cfg)
 
         values = [opt.value for opt in options]

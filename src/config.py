@@ -268,4 +268,5 @@ def check_and_refresh_config(s3_client: S3Client) -> Config:
     except Exception as e:
         logger.warning(f"Failed to check config freshness: {e}")
 
+    assert _config is not None
     return _config

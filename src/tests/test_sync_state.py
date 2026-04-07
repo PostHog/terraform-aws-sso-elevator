@@ -911,7 +911,7 @@ class TestManualAssignmentDetectionAccuracy:
         manager = SyncStateManager(
             managed_group_ids={rule.group_name: group_id},
             mapper=mapper,
-            manual_assignment_policy=policy,
+            manual_assignment_policy=policy,  # type: ignore[arg-type]  # Hypothesis sampled_from returns str, not Literal
         )
 
         # User is in the group but doesn't match rules
@@ -1150,7 +1150,7 @@ class TestPolicyBasedRemovalBehavior:
         manager = SyncStateManager(
             managed_group_ids={rule.group_name: group_id},
             mapper=mapper,
-            manual_assignment_policy=policy,
+            manual_assignment_policy=policy,  # type: ignore[arg-type]  # Hypothesis sampled_from returns str, not Literal
         )
 
         # User is in the group but doesn't match rules (manual assignment)
@@ -1193,7 +1193,7 @@ class TestPolicyBasedRemovalBehavior:
             manager = SyncStateManager(
                 managed_group_ids={rule.group_name: group_id},
                 mapper=mapper,
-                manual_assignment_policy=policy,
+                manual_assignment_policy=policy,  # type: ignore[arg-type]  # str loop var, not Literal
             )
 
             # User is in the group AND matches rules (not a manual assignment)

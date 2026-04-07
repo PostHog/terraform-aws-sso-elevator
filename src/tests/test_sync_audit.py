@@ -43,7 +43,7 @@ matched_attributes_strategy = st.one_of(
 def sync_audit_params_strategy(draw: st.DrawFn) -> SyncAuditParams:  # noqa: ANN201
     """Generate random SyncAuditParams for testing."""
     return SyncAuditParams(
-        operation_type=draw(sync_operation_types),
+        operation_type=draw(sync_operation_types),  # type: ignore[arg-type]  # Hypothesis sampled_from returns str, not Literal
         sso_user_principal_id=draw(user_principal_id),
         sso_user_email=draw(email_strategy),
         group_id=draw(group_id),
