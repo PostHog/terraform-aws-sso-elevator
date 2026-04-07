@@ -71,7 +71,7 @@ class TestConfigParsing:
 class TestStatementModels:
     def test_statement_extend_fields(self):
         stmt = Statement(
-            resource_type="Account",
+            resource_type="Account",  # type: ignore[arg-type]
             resource=frozenset(["111111111111"]),
             permission_set=frozenset(["Admin"]),
             can_extend_expired_grant=True,
@@ -190,7 +190,7 @@ class TestExtendGrantButtonPayload:
         assert restored.requester_slack_id == "U123"
         assert restored.extension_duration_in_minutes == 15
         assert restored.account_id == "111111111111"
-        assert restored.approver["id"] == "A1"
+        assert restored.approver["id"] == "A1"  # type: ignore[index]
 
     def test_group_payload_roundtrip(self):
         payload = ExtendGrantButtonPayload(
@@ -720,5 +720,5 @@ class TestBuildExtendGrantButton:
         )
         block = build_extend_grant_button(payload)
         assert block.block_id == "extend_grant_button"
-        assert block.elements[0].action_id == "extend_grant"
-        assert "15 min" in block.elements[0].text.text
+        assert block.elements[0].action_id == "extend_grant"  # type: ignore[union-attr]
+        assert "15 min" in block.elements[0].text.text  # type: ignore[union-attr]

@@ -390,6 +390,7 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
         first_statement = list(decision.based_on_statements)[0] if decision.based_on_statements else None
         approver_emails = list(first_statement.approvers) if first_statement else []
         approver_groups = list(first_statement.approver_groups) if first_statement else []
+        assert result.user_principal_id is not None
         early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
             schedule_name=result.schedule_name,
             requester_slack_id=requester.id,
@@ -578,13 +579,14 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
             """,
         )
 
+    assert slack_response is not None
     blocks = slack_helpers.HeaderSectionBlock.set_status(
-        blocks=slack_response["message"]["blocks"],
+        blocks=slack_response["message"]["blocks"],  # type: ignore[index]
         status_text=status_text,
     )
     client.chat_update(
         channel=cfg.slack_channel_id,
-        ts=slack_response["ts"],
+        ts=str(slack_response["ts"]),
         blocks=blocks,
         text=text,
     )
@@ -639,6 +641,7 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
             first_statement = list(decision.based_on_statements)[0] if decision.based_on_statements else None
             approver_emails = list(first_statement.approvers) if first_statement else []
             approver_groups = list(first_statement.approver_groups) if first_statement else []
+            assert result.user_principal_id is not None
             early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
                 schedule_name=result.schedule_name,
                 requester_slack_id=requester.id,
@@ -1000,6 +1003,7 @@ def handle_extend_grant_button_click(body: dict, client: WebClient, context: Bol
 
     if payload.account_id and payload.permission_set_arn:
         # Account access extension
+        assert payload.instance_arn is not None
         account_assignment = sso.UserAccountAssignment(
             instance_arn=payload.instance_arn,
             account_id=payload.account_id,
@@ -1166,6 +1170,7 @@ def handle_early_revoke_modal_submission(body: dict, client: WebClient, context:
     # Perform the revocation
     if button_payload.account_id and button_payload.permission_set_arn:
         # Account access revocation
+        assert button_payload.instance_arn is not None
         user_account_assignment = sso.UserAccountAssignment(
             instance_arn=button_payload.instance_arn,
             account_id=button_payload.account_id,
@@ -1189,6 +1194,8 @@ def handle_early_revoke_modal_submission(body: dict, client: WebClient, context:
         )
     elif button_payload.group_id and button_payload.membership_id:
         # Group access revocation
+        assert button_payload.group_name is not None
+        assert button_payload.identity_store_id is not None
         group_assignment = sso.GroupAssignment(
             group_name=button_payload.group_name,
             group_id=button_payload.group_id,

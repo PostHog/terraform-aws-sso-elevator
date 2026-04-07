@@ -11,7 +11,6 @@ import logging
 import os
 
 import boto3
-from botocore.exceptions import ClientError
 from mypy_boto3_events import EventBridgeClient
 
 logger = logging.getLogger(__name__)

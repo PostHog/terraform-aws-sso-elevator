@@ -601,12 +601,12 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
             user_account_assignment,
         )
     except Exception as e:
-        error_code = getattr(getattr(e, "response", {}), "get", lambda *_: None)("Error", {}).get("Code")
+        error_code = None
         # Check for botocore ClientError
         if hasattr(e, "response"):
             import jmespath as jp
 
-            error_code = jp.search("Error.Code", e.response)
+            error_code = jp.search("Error.Code", getattr(e, "response", {}))
         if error_code == "ConflictException":
             logger.warning(
                 "Account assignment already deleted (likely by early revoke), skipping",
@@ -706,7 +706,7 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
             )
             schedule.schedule_discard_extend_button_event(
                 schedule_client=scheduler_client,
-                time_stamp=extend_response["ts"],
+                time_stamp=str(extend_response["ts"]),
                 channel_id=cfg.slack_channel_id,
             )
 
@@ -730,7 +730,7 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
         if hasattr(e, "response"):
             import jmespath as jp
 
-            error_code = jp.search("Error.Code", e.response)
+            error_code = jp.search("Error.Code", getattr(e, "response", {}))
         if error_code == "ResourceNotFoundException":
             logger.warning(
                 "Group membership already deleted (likely by early revoke), skipping",
@@ -789,7 +789,7 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
             )
             schedule.schedule_discard_extend_button_event(
                 schedule_client=scheduler_client,
-                time_stamp=extend_response["ts"],
+                time_stamp=str(extend_response["ts"]),
                 channel_id=cfg.slack_channel_id,
             )
 

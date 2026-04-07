@@ -24,14 +24,15 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import posthog as posthog_module
+    import types
+
 
 APPLICATION = "aws-sso-elevator"
 logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
-def get_posthog_client() -> posthog_module | None:
+def get_posthog_client() -> types.ModuleType | None:
     """Get configured PostHog client, or None if not configured.
 
     Returns cached client instance. The client is configured on first call

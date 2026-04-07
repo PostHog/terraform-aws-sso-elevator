@@ -147,13 +147,14 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
             """,
         )
 
+    assert slack_response is not None
     blocks = slack_helpers.HeaderSectionBlock.set_status(
-        blocks=slack_response["message"]["blocks"],
+        blocks=slack_response["message"]["blocks"],  # type: ignore[index]
         status_text=status_text,
     )
     client.chat_update(
         channel=cfg.slack_channel_id,
-        ts=slack_response["ts"],
+        ts=str(slack_response["ts"]),
         blocks=blocks,
         text=text,
     )
@@ -199,6 +200,7 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
             first_statement = list(decision.based_on_statements)[0] if decision.based_on_statements else None
             approver_emails = list(first_statement.approvers) if first_statement else []
             approver_groups = list(first_statement.approver_groups) if first_statement else []
+            assert result.user_principal_id is not None
             early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
                 schedule_name=result.schedule_name,
                 requester_slack_id=requester.id,
@@ -357,6 +359,7 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
         first_statement = list(decision.based_on_statements)[0] if decision.based_on_statements else None
         approver_emails = list(first_statement.approvers) if first_statement else []
         approver_groups = list(first_statement.approver_groups) if first_statement else []
+        assert result.user_principal_id is not None
         early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
             schedule_name=result.schedule_name,
             requester_slack_id=requester.id,
