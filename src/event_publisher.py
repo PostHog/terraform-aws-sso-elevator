@@ -7,13 +7,14 @@ events via EventBridge rules.
 """
 
 import json
-import logging
 import os
 
 import boto3
 from mypy_boto3_events import EventBridgeClient
 
-logger = logging.getLogger(__name__)
+import config
+
+logger = config.get_logger(service="event_publisher")
 
 _events_client: EventBridgeClient | None = None
 
