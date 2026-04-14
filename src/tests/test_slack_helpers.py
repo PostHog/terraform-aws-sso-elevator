@@ -587,6 +587,11 @@ def _opt_text(opt) -> str:  # noqa: ANN001
     return opt.text if isinstance(opt.text, str) else opt.text.text
 
 
+def _group_label(group) -> str:  # noqa: ANN001
+    """Extract label text from a Slack OptionGroup (handles str or PlainTextObject)."""
+    return group.label if isinstance(group.label, str) else group.label.text
+
+
 class TestGetPermissionSetDisplayName:
     """Tests for RequestForAccessView._get_permission_set_display_name."""
 
@@ -675,6 +680,74 @@ class TestBuildSelectPermissionSetInputBlock:
         text_map = {_opt_text(opt) for opt in block.element.options}  # type: ignore[union-attr]
         assert text_map == {"Custom Label", "Unmapped"}
 
+    def test_auto_approved_arns_none_uses_flat_options(self):
+        psets = [_ps("Admin"), _ps("ReadOnly")]
+        block = RequestForAccessView.build_select_permission_set_input_block(psets, auto_approved_arns=None)
+        assert block.element.options is not None  # type: ignore[union-attr]
+        assert block.element.option_groups is None  # type: ignore[union-attr]
+
+    def test_all_auto_approved_single_group(self):
+        psets = [_ps("Admin"), _ps("ReadOnly")]
+        arns = {ps.arn for ps in psets}
+        block = RequestForAccessView.build_select_permission_set_input_block(psets, auto_approved_arns=arns)
+        groups = block.element.option_groups  # type: ignore[union-attr]
+        assert len(groups) == 1
+        assert _group_label(groups[0]) == "Auto approved"
+
+    def test_all_require_approval_single_group(self):
+        psets = [_ps("Admin"), _ps("ReadOnly")]
+        block = RequestForAccessView.build_select_permission_set_input_block(psets, auto_approved_arns=set())
+        groups = block.element.option_groups  # type: ignore[union-attr]
+        assert len(groups) == 1
+        assert _group_label(groups[0]) == "Requires approval"
+
+    def test_mixed_auto_and_requires_approval(self):
+        ps_auto = _ps("AutoRole")
+        ps_manual = _ps("ManualRole")
+        block = RequestForAccessView.build_select_permission_set_input_block(
+            [ps_auto, ps_manual],
+            auto_approved_arns={ps_auto.arn},
+        )
+        groups = block.element.option_groups  # type: ignore[union-attr]
+        assert len(groups) == 2
+        assert _group_label(groups[0]) == "Auto approved"
+        assert _group_label(groups[1]) == "Requires approval"
+        assert [_opt_text(o) for o in groups[0].options] == ["AutoRole"]
+        assert [_opt_text(o) for o in groups[1].options] == ["ManualRole"]
+
+    def test_option_groups_sorted_by_display_name(self):
+        psets = [_ps("ZZZ"), _ps("AAA"), _ps("MMM")]
+        display = {"ZZZ": "alpha", "AAA": "charlie", "MMM": "bravo"}
+        block = RequestForAccessView.build_select_permission_set_input_block(
+            psets,
+            display_names=display,
+            auto_approved_arns=set(),
+        )
+        groups = block.element.option_groups  # type: ignore[union-attr]
+        texts = [_opt_text(o) for o in groups[0].options]
+        assert texts == ["alpha", "bravo", "charlie"]
+
+    def test_option_groups_use_display_names(self):
+        ps = _ps("eks-developer")
+        display = {"eks-developer": "EKS/kubectl access"}
+        block = RequestForAccessView.build_select_permission_set_input_block(
+            [ps],
+            display_names=display,
+            auto_approved_arns={ps.arn},
+        )
+        groups = block.element.option_groups  # type: ignore[union-attr]
+        assert _opt_text(groups[0].options[0]) == "EKS/kubectl access"
+
+    def test_option_groups_value_is_arn(self):
+        ps = _ps("Admin", arn="arn:aws:sso:::permissionSet/ssoins-abc/ps-123")
+        block = RequestForAccessView.build_select_permission_set_input_block(
+            [ps],
+            display_names={"Admin": "Friendly"},
+            auto_approved_arns={ps.arn},
+        )
+        groups = block.element.option_groups  # type: ignore[union-attr]
+        assert groups[0].options[0].value == "arn:aws:sso:::permissionSet/ssoins-abc/ps-123"
+
 
 class TestUpdateWithPermissionSets:
     """Tests for RequestForAccessView.update_with_permission_sets."""
@@ -706,3 +779,18 @@ class TestUpdateWithPermissionSets:
         texts = [_opt_text(opt) for opt in ps_block.element.options]  # type: ignore[union-attr]
         assert "Admin" in texts
         assert "ReadOnly" in texts
+
+    def test_auto_approved_arns_passed_through(self):
+        blocks = self._make_view_blocks()
+        ps_auto = _ps("AutoRole")
+        ps_manual = _ps("ManualRole")
+        view = RequestForAccessView.update_with_permission_sets(
+            blocks,
+            [ps_auto, ps_manual],
+            auto_approved_arns={ps_auto.arn},
+        )
+        ps_block = next(b for b in view.blocks if getattr(b, "block_id", None) == RequestForAccessView.PERMISSION_SET_BLOCK_ID)
+        groups = ps_block.element.option_groups  # type: ignore[union-attr]
+        assert len(groups) == 2
+        assert _group_label(groups[0]) == "Auto approved"
+        assert _group_label(groups[1]) == "Requires approval"

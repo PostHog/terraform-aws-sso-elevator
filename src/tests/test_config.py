@@ -134,6 +134,7 @@ def valid_config_dict(
         "max_permissions_duration_time": "24",
         "secondary_fallback_email_domains": secondary_fallback_email_domains,
         "permission_duration_list_override": permission_duration_list_override,
+        "permission_set_display_names": json.dumps({}),
     }
 
 
@@ -418,3 +419,57 @@ def test_load_approval_config_returns_etag(mock_s3_client):
 
     assert etag == '"test-etag"'
     assert data == {"statements": [], "group_statements": []}
+
+
+def test_config_parses_display_names_from_s3(mock_s3_client, monkeypatch):
+    """S3 config with permission_set_display_names is parsed into Config."""
+    import boto3
+
+    s3_config = {
+        "statements": [VALID_STATEMENT_DICT],
+        "group_statements": [VALID_GROUP_STATEMENT_DICT],
+        "permission_set_display_names": {"eks-dev": "EKS access"},
+    }
+    mock_s3_client.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(s3_config).encode("utf-8"))}
+    monkeypatch.setattr(boto3, "client", lambda service: mock_s3_client if service == "s3" else MagicMock())
+
+    config_dict = valid_config_dict(secondary_fallback_email_domains_as_json=False, permission_duration_list_override_as_json=False)
+    config_dict["config_s3_key"] = "config/approval-config.json"
+    del config_dict["statements"]
+    del config_dict["group_statements"]
+    del config_dict["permission_set_display_names"]
+
+    cfg = config.Config(**config_dict)
+    assert cfg.permission_set_display_names == {"eks-dev": "EKS access"}
+
+
+def test_config_defaults_empty_display_names_from_s3(mock_s3_client, monkeypatch):
+    """S3 config without permission_set_display_names defaults to empty dict."""
+    import boto3
+
+    s3_config = {
+        "statements": [VALID_STATEMENT_DICT],
+        "group_statements": [VALID_GROUP_STATEMENT_DICT],
+    }
+    mock_s3_client.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(s3_config).encode("utf-8"))}
+    monkeypatch.setattr(boto3, "client", lambda service: mock_s3_client if service == "s3" else MagicMock())
+
+    config_dict = valid_config_dict(secondary_fallback_email_domains_as_json=False, permission_duration_list_override_as_json=False)
+    config_dict["config_s3_key"] = "config/approval-config.json"
+    del config_dict["statements"]
+    del config_dict["group_statements"]
+    del config_dict["permission_set_display_names"]
+
+    cfg = config.Config(**config_dict)
+    assert cfg.permission_set_display_names == {}
+
+
+def test_config_parses_display_names_from_env():
+    """Env var path: JSON string is parsed into dict."""
+    config_dict = valid_config_dict(
+        secondary_fallback_email_domains_as_json=False,
+        permission_duration_list_override_as_json=False,
+    )
+    config_dict["permission_set_display_names"] = json.dumps({"admin": "Administrator"})
+    cfg = config.Config(**config_dict)
+    assert cfg.permission_set_display_names == {"admin": "Administrator"}

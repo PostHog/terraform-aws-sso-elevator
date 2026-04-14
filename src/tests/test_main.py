@@ -534,3 +534,96 @@ class TestMultiAccountFanOut:
         finally:
             for p in patches:
                 p.stop()
+
+
+class TestClassifyAutoApprovedPermissionSets:
+    """Tests for classify_auto_approved_permission_sets."""
+
+    def _ps(self, name: str, arn: str = "") -> entities.aws.PermissionSet:
+        return entities.aws.PermissionSet(name=name, arn=arn or f"arn:sso:ps/{name}", description=None)
+
+    def _decision(self, grant: bool):
+        import access_control
+
+        reason = access_control.DecisionReason.ApprovalNotRequired if grant else access_control.DecisionReason.RequiresApproval
+        return access_control.AccessRequestDecision(
+            grant=grant,
+            reason=reason,
+            based_on_statements=frozenset(),
+            approvers=frozenset() if grant else frozenset(["approver@test.com"]),
+            approver_groups=frozenset(),
+        )
+
+    def test_auto_approved_for_all_accounts(self, import_main):
+        main = import_main
+        ps = self._ps("ReadOnly")
+
+        with patch.object(main.access_control, "make_decision_on_access_request", return_value=self._decision(grant=True)):
+            result = main.classify_auto_approved_permission_sets(
+                statements=frozenset(),
+                permission_sets=[ps],
+                account_ids=["111", "222"],
+                requester_email="user@test.com",
+                user_group_ids=set(),
+                requester_slack_id="U123",
+            )
+        assert ps.arn in result
+
+    def test_requires_approval_for_all_accounts(self, import_main):
+        main = import_main
+        ps = self._ps("Admin")
+
+        with patch.object(main.access_control, "make_decision_on_access_request", return_value=self._decision(grant=False)):
+            result = main.classify_auto_approved_permission_sets(
+                statements=frozenset(),
+                permission_sets=[ps],
+                account_ids=["111", "222"],
+                requester_email="user@test.com",
+                user_group_ids=set(),
+                requester_slack_id="U123",
+            )
+        assert ps.arn not in result
+
+    def test_mixed_accounts_requires_approval(self, import_main):
+        """PS auto-approved for account 111 but not 222 → not in auto_approved set."""
+        main = import_main
+        ps = self._ps("MixedRole")
+
+        def side_effect(*_args, **kwargs):
+            if kwargs.get("account_id") == "111":
+                return self._decision(grant=True)
+            return self._decision(grant=False)
+
+        with patch.object(main.access_control, "make_decision_on_access_request", side_effect=side_effect):
+            result = main.classify_auto_approved_permission_sets(
+                statements=frozenset(),
+                permission_sets=[ps],
+                account_ids=["111", "222"],
+                requester_email="user@test.com",
+                user_group_ids=set(),
+                requester_slack_id="U123",
+            )
+        assert ps.arn not in result
+
+    def test_multiple_permission_sets_classified_independently(self, import_main):
+        """Each PS is classified independently — one can be auto, another manual."""
+        main = import_main
+        ps_auto = self._ps("ReadOnly")
+        ps_manual = self._ps("Admin")
+
+        def side_effect(*_args, **kwargs):
+            if kwargs.get("permission_set_name") == "ReadOnly":
+                return self._decision(grant=True)
+            return self._decision(grant=False)
+
+        with patch.object(main.access_control, "make_decision_on_access_request", side_effect=side_effect):
+            result = main.classify_auto_approved_permission_sets(
+                statements=frozenset(),
+                permission_sets=[ps_auto, ps_manual],
+                account_ids=["111"],
+                requester_email="user@test.com",
+                user_group_ids=set(),
+                requester_slack_id="U123",
+            )
+        assert ps_auto.arn in result
+        assert ps_manual.arn not in result
