@@ -145,6 +145,7 @@ class Config(BaseSettings):
     accounts: frozenset[str]
     permission_sets: frozenset[str]
     groups: frozenset[str]
+    permission_set_display_names: dict[str, str]
 
     s3_bucket_for_audit_entry_name: str
     s3_bucket_prefix_for_partitions: str
@@ -190,6 +191,7 @@ class Config(BaseSettings):
             _initial_config_etag = etag
             statements_raw = config_data.get("statements")
             group_statements_raw = config_data.get("group_statements")
+            permission_set_display_names = config_data.get("permission_set_display_names", {})
         else:
             # Fallback to environment variables
             statements_raw = values.get("statements")
@@ -198,6 +200,10 @@ class Config(BaseSettings):
             group_statements_raw = values.get("group_statements")
             if group_statements_raw is not None and isinstance(group_statements_raw, str):
                 group_statements_raw = json.loads(group_statements_raw)
+            permission_set_display_names_raw = values.get("permission_set_display_names")
+            if isinstance(permission_set_display_names_raw, str):
+                permission_set_display_names_raw = json.loads(permission_set_display_names_raw)
+            permission_set_display_names = permission_set_display_names_raw or {}
 
         # Parse statements
         if statements_raw is not None:
@@ -227,6 +233,7 @@ class Config(BaseSettings):
             "statements": frozenset(statements),
             "group_statements": frozenset(group_statements),
             "groups": groups,
+            "permission_set_display_names": permission_set_display_names,
             "s3_bucket_prefix_for_partitions": s3_bucket_prefix_for_partitions,
         }
 

@@ -798,6 +798,7 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
     updated_view = slack_helpers.RequestForAccessView.update_with_permission_sets(
         view_blocks=body["view"]["blocks"],
         permission_sets=permission_sets,
+        display_names=cfg.permission_set_display_names,
     )
     return client.views_update(view_id=view_id, view=updated_view)
 

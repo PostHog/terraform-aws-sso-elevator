@@ -129,8 +129,27 @@ class RequestForAccessView:
         )
 
     @classmethod
-    def build_select_permission_set_input_block(cls, permission_sets: list[entities.aws.PermissionSet]) -> InputBlock:
-        sorted_permission_sets = sorted(permission_sets, key=lambda permission_set: permission_set.name)
+    def _get_permission_set_display_name(
+        cls,
+        ps: entities.aws.PermissionSet,
+        display_names: dict[str, str] | None = None,
+    ) -> str:
+        if display_names is not None:
+            name = display_names.get(ps.name) or display_names.get(ps.arn) or ps.name
+        else:
+            name = ps.name
+        return name[:75]
+
+    @classmethod
+    def build_select_permission_set_input_block(
+        cls,
+        permission_sets: list[entities.aws.PermissionSet],
+        display_names: dict[str, str] | None = None,
+    ) -> InputBlock:
+        sorted_permission_sets = sorted(
+            permission_sets,
+            key=lambda ps: cls._get_permission_set_display_name(ps, display_names).lower(),
+        )
         return InputBlock(
             block_id=cls.PERMISSION_SET_BLOCK_ID,
             label=PlainTextObject(text="Permission set"),
@@ -138,8 +157,11 @@ class RequestForAccessView:
                 action_id=cls.PERMISSION_SET_ACTION_ID,
                 placeholder=PlainTextObject(text="Select permission set"),
                 options=[
-                    Option(text=PlainTextObject(text=permission_set.name), value=permission_set.arn)
-                    for permission_set in sorted_permission_sets
+                    Option(
+                        text=PlainTextObject(text=cls._get_permission_set_display_name(ps, display_names)),
+                        value=ps.arn,
+                    )
+                    for ps in sorted_permission_sets
                 ],
             ),
         )
@@ -171,7 +193,12 @@ class RequestForAccessView:
         return view
 
     @classmethod
-    def update_with_permission_sets(cls, view_blocks: list, permission_sets: list[entities.aws.PermissionSet]) -> View:
+    def update_with_permission_sets(
+        cls,
+        view_blocks: list,
+        permission_sets: list[entities.aws.PermissionSet],
+        display_names: dict[str, str] | None = None,
+    ) -> View:
         view = cls.build()
         view.submit_disabled = False  # type: ignore[attr-defined]
         # Start from the current blocks, remove placeholder
@@ -179,7 +206,7 @@ class RequestForAccessView:
         # Insert permission set dropdown after account dropdown
         blocks = insert_blocks(
             blocks=blocks,
-            blocks_to_insert=[cls.build_select_permission_set_input_block(permission_sets)],
+            blocks_to_insert=[cls.build_select_permission_set_input_block(permission_sets, display_names=display_names)],
             after_block_id=cls.ACCOUNT_BLOCK_ID,
         )
         view.blocks = blocks
