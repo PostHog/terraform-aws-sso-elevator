@@ -739,6 +739,35 @@ def handle_duration_picker_action(ack):  # noqa: ANN201, ANN001
     ack()
 
 
+def classify_auto_approved_permission_sets(  # noqa: PLR0913
+    statements: frozenset[statement.Statement],
+    permission_sets: list[entities.aws.PermissionSet],
+    account_ids: list[str],
+    requester_email: str,
+    user_group_ids: set[str],
+    requester_slack_id: str,
+    approver_group_resolver: Callable[[frozenset[str]], set[str]] | None = None,
+) -> set[str]:
+    """Return ARNs of permission sets that are auto-approved for all given accounts."""
+    auto_approved = set()
+    for ps in permission_sets:
+        if all(
+            access_control.make_decision_on_access_request(
+                statements,
+                account_id=aid,
+                permission_set_name=ps.name,
+                requester_email=requester_email,
+                user_group_ids=user_group_ids,
+                permission_set_arn=ps.arn,
+                requester_slack_id=requester_slack_id,
+                approver_group_resolver=approver_group_resolver,
+            ).grant
+            for aid in account_ids
+        ):
+            auto_approved.add(ps.arn)
+    return auto_approved
+
+
 @app.action(slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID)
 def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackResponse:
     ack()
@@ -795,10 +824,37 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
         updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
         return client.views_update(view_id=view_id, view=updated_view)
 
+    # Classify permission sets as auto-approved vs requires-approval
+    user_email = user_view_map.get(f"{view_key}:user_email")
+    auto_approved_arns: set[str] | None = None
+    if user_email:
+        resolver_cache: dict[frozenset[str], set[str]] = {}
+
+        def approver_group_resolver(group_ids: frozenset[str]) -> set[str]:
+            if not group_ids:
+                return set()
+            if group_ids in resolver_cache:
+                return resolver_cache[group_ids]
+            group_users, _ = slack_helpers.resolve_approver_groups(client, group_ids)
+            result = {u.id for u in group_users}
+            resolver_cache[group_ids] = result
+            return result
+
+        auto_approved_arns = classify_auto_approved_permission_sets(
+            statements=cfg.statements,
+            permission_sets=permission_sets,
+            account_ids=account_ids,
+            requester_email=user_email,
+            user_group_ids=user_group_ids,
+            requester_slack_id=user_id,
+            approver_group_resolver=approver_group_resolver,
+        )
+
     updated_view = slack_helpers.RequestForAccessView.update_with_permission_sets(
         view_blocks=body["view"]["blocks"],
         permission_sets=permission_sets,
         display_names=cfg.permission_set_display_names,
+        auto_approved_arns=auto_approved_arns,
     )
     return client.views_update(view_id=view_id, view=updated_view)
 

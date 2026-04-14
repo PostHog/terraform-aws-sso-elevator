@@ -17,6 +17,7 @@ from slack_sdk.models.blocks import (
     InputBlock,
     MarkdownTextObject,
     Option,
+    OptionGroup,
     PlainTextInputElement,
     PlainTextObject,
     SectionBlock,
@@ -141,28 +142,55 @@ class RequestForAccessView:
         return name[:75]
 
     @classmethod
+    def _build_permission_set_option(cls, ps: entities.aws.PermissionSet, display_names: dict[str, str] | None) -> Option:
+        return Option(text=PlainTextObject(text=cls._get_permission_set_display_name(ps, display_names)), value=ps.arn)
+
+    @classmethod
     def build_select_permission_set_input_block(
         cls,
         permission_sets: list[entities.aws.PermissionSet],
         display_names: dict[str, str] | None = None,
+        auto_approved_arns: set[str] | None = None,
     ) -> InputBlock:
-        sorted_permission_sets = sorted(
-            permission_sets,
-            key=lambda ps: cls._get_permission_set_display_name(ps, display_names).lower(),
-        )
+        sort_key = lambda ps: cls._get_permission_set_display_name(ps, display_names).lower()  # noqa: E731
+
+        if auto_approved_arns is not None:
+            auto_approved = sorted([ps for ps in permission_sets if ps.arn in auto_approved_arns], key=sort_key)
+            requires_approval = sorted([ps for ps in permission_sets if ps.arn not in auto_approved_arns], key=sort_key)
+            groups = []
+            if auto_approved:
+                groups.append(
+                    OptionGroup(
+                        label=PlainTextObject(text="Auto approved"),
+                        options=[cls._build_permission_set_option(ps, display_names) for ps in auto_approved],
+                    )
+                )
+            if requires_approval:
+                groups.append(
+                    OptionGroup(
+                        label=PlainTextObject(text="Requires approval"),
+                        options=[cls._build_permission_set_option(ps, display_names) for ps in requires_approval],
+                    )
+                )
+            if groups:
+                return InputBlock(
+                    block_id=cls.PERMISSION_SET_BLOCK_ID,
+                    label=PlainTextObject(text="Permission set"),
+                    element=StaticSelectElement(
+                        action_id=cls.PERMISSION_SET_ACTION_ID,
+                        placeholder=PlainTextObject(text="Select permission set"),
+                        option_groups=groups,
+                    ),
+                )
+
+        sorted_permission_sets = sorted(permission_sets, key=sort_key)
         return InputBlock(
             block_id=cls.PERMISSION_SET_BLOCK_ID,
             label=PlainTextObject(text="Permission set"),
             element=StaticSelectElement(
                 action_id=cls.PERMISSION_SET_ACTION_ID,
                 placeholder=PlainTextObject(text="Select permission set"),
-                options=[
-                    Option(
-                        text=PlainTextObject(text=cls._get_permission_set_display_name(ps, display_names)),
-                        value=ps.arn,
-                    )
-                    for ps in sorted_permission_sets
-                ],
+                options=[cls._build_permission_set_option(ps, display_names) for ps in sorted_permission_sets],
             ),
         )
 
@@ -198,6 +226,7 @@ class RequestForAccessView:
         view_blocks: list,
         permission_sets: list[entities.aws.PermissionSet],
         display_names: dict[str, str] | None = None,
+        auto_approved_arns: set[str] | None = None,
     ) -> View:
         view = cls.build()
         view.submit_disabled = False  # type: ignore[attr-defined]
@@ -206,7 +235,13 @@ class RequestForAccessView:
         # Insert permission set dropdown after account dropdown
         blocks = insert_blocks(
             blocks=blocks,
-            blocks_to_insert=[cls.build_select_permission_set_input_block(permission_sets, display_names=display_names)],
+            blocks_to_insert=[
+                cls.build_select_permission_set_input_block(
+                    permission_sets,
+                    display_names=display_names,
+                    auto_approved_arns=auto_approved_arns,
+                )
+            ],
             after_block_id=cls.ACCOUNT_BLOCK_ID,
         )
         view.blocks = blocks
