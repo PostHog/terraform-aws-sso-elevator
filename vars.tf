@@ -91,6 +91,19 @@ variable "group_config" {
   default     = []
 }
 
+variable "permission_set_display_names" {
+  description = <<EOT
+Optional mapping of permission set names (or ARNs) to human-friendly labels
+shown in the Slack dropdown. Keys are AWS SSO permission set names or ARNs
+(as used in config statements), values are display labels.
+Example: { "eks-developer" = "EKS/kubectl access", "secrets-editor" = "Manage secrets" }
+Permission sets without a mapping display their AWS name as-is.
+Note: Slack limits dropdown option text to 75 characters.
+EOT
+  type        = map(string)
+  default     = {}
+}
+
 variable "revoker_lambda_name" {
   description = "value for the revoker lambda name"
   type        = string

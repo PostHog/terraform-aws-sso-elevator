@@ -63,8 +63,9 @@ resource "aws_s3_object" "approval_config" {
   bucket = module.config_bucket.s3_bucket_id
   key    = "config/approval-config.json"
   content = jsonencode({
-    statements       = var.config
-    group_statements = var.group_config
+    statements                   = var.config
+    group_statements             = var.group_config
+    permission_set_display_names = var.permission_set_display_names
   })
   content_type = "application/json"
 
