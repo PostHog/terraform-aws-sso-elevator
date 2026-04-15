@@ -768,6 +768,34 @@ def classify_auto_approved_permission_sets(  # noqa: PLR0913
     return auto_approved
 
 
+def _get_cached_user_info(view_key: str, user_id: str, client: "WebClient") -> tuple[set[str], str | None]:
+    """Get user group IDs and email from cache, re-fetching from Identity Center on miss."""
+    user_group_ids = user_view_map.get(f"{view_key}:group_ids")
+    user_email = user_view_map.get(f"{view_key}:user_email")
+    if user_group_ids is not None:
+        return user_group_ids, user_email
+
+    logger.info("User info cache miss (container recycled), re-fetching from Identity Center")
+    identity_store_id = sso.get_identity_store_id(cfg, sso_client)
+    user_email = slack_helpers.get_user(client, id=user_id).email
+    user_principal_id, _ = sso.get_user_principal_id_by_email(
+        identity_store_client=identity_store_client,
+        identity_store_id=identity_store_id,
+        email=user_email,
+        cfg=cfg,
+    )
+    user_group_ids = sso.get_user_group_ids(
+        identity_store_client=identity_store_client,
+        identity_store_id=identity_store_id,
+        user_principal_id=user_principal_id,
+    )
+    # Re-populate cache for subsequent calls in this container
+    user_view_map[f"{view_key}:group_ids"] = user_group_ids
+    user_view_map[f"{view_key}:user_principal_id"] = user_principal_id
+    user_view_map[f"{view_key}:user_email"] = user_email
+    return user_group_ids, user_email
+
+
 @app.action(slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID)
 def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackResponse:
     ack()
@@ -791,19 +819,12 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
         updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
         return client.views_update(view_id=view_id, view=updated_view)
 
-    # Get cached user_group_ids
+    # Get cached user info, re-fetching from Identity Center on cache miss
+    # (e.g. when Lambda container was recycled between form load and account selection)
     user_id = body.get("user", {}).get("id")
     callback_id = slack_helpers.RequestForAccessView.CALLBACK_ID
     view_key = f"{user_id}:{callback_id}"
-    group_ids_key = f"{view_key}:group_ids"
-    user_group_ids = user_view_map.get(group_ids_key)
-    if user_group_ids is None:
-        logger.warning(
-            f"User group IDs not found in cache for key: {group_ids_key}. "
-            "This may happen if Lambda container was recycled between form load and account selection. "
-            "Defaulting to empty set, which will restrict visibility to statements without required_group_membership."
-        )
-        user_group_ids = set()
+    user_group_ids, user_email = _get_cached_user_info(view_key, user_id, client)
 
     # Compute intersection of permission sets across all selected accounts
     valid_ps_names = statement.get_permission_sets_for_accounts_and_user(cfg.statements, account_ids, user_group_ids)
@@ -825,7 +846,6 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
         return client.views_update(view_id=view_id, view=updated_view)
 
     # Classify permission sets as auto-approved vs requires-approval
-    user_email = user_view_map.get(f"{view_key}:user_email")
     auto_approved_arns: set[str] | None = None
     if user_email:
         resolver_cache: dict[frozenset[str], set[str]] = {}

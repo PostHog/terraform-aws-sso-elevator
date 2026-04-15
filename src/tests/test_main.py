@@ -627,3 +627,112 @@ class TestClassifyAutoApprovedPermissionSets:
             )
         assert ps_auto.arn in result
         assert ps_manual.arn not in result
+
+
+class TestGetCachedUserInfo:
+    """Tests for _get_cached_user_info re-fetching user info on cache miss."""
+
+    def test_cache_hit_returns_cached_values(self, import_main):
+        """When group_ids are cached, returns cached values without API calls."""
+        main = import_main
+        main.user_view_map.clear()
+
+        view_key = "U_CACHED:request_for__account_access_submitted"
+        main.user_view_map[f"{view_key}:group_ids"] = {"group-1"}
+        main.user_view_map[f"{view_key}:user_email"] = "cached@test.com"
+
+        mock_client = MagicMock()
+
+        with (
+            patch.object(main.sso, "get_identity_store_id") as mock_get_id,
+            patch.object(main.sso, "get_user_principal_id_by_email") as mock_get_principal,
+            patch.object(main.sso, "get_user_group_ids") as mock_get_groups,
+        ):
+            group_ids, email = main._get_cached_user_info(view_key, "U_CACHED", mock_client)
+
+            mock_get_id.assert_not_called()
+            mock_get_principal.assert_not_called()
+            mock_get_groups.assert_not_called()
+
+        assert group_ids == {"group-1"}
+        assert email == "cached@test.com"
+
+    def test_cache_miss_refetches_from_identity_center(self, import_main):
+        """When group_ids are not cached, re-fetches from Identity Center."""
+        main = import_main
+        main.user_view_map.clear()
+
+        view_key = "U_COLD:request_for__account_access_submitted"
+        refetched_groups = {"group-dev", "group-admin"}
+
+        mock_client = MagicMock()
+
+        with (
+            patch.object(main.sso, "get_identity_store_id", return_value="d-123456"),
+            patch.object(
+                main.slack_helpers,
+                "get_user",
+                return_value=entities.slack.User(id="U_COLD", email="cold@test.com", real_name="Cold User"),
+            ),
+            patch.object(main.sso, "get_user_principal_id_by_email", return_value=("principal-cold", None)),
+            patch.object(main.sso, "get_user_group_ids", return_value=refetched_groups) as mock_get_groups,
+        ):
+            group_ids, email = main._get_cached_user_info(view_key, "U_COLD", mock_client)
+
+            mock_get_groups.assert_called_once()
+
+        assert group_ids == refetched_groups
+        assert email == "cold@test.com"
+
+    def test_cache_miss_repopulates_cache(self, import_main):
+        """After re-fetching, user info is stored back in the cache."""
+        main = import_main
+        main.user_view_map.clear()
+
+        view_key = "U_REPOP:request_for__account_access_submitted"
+        mock_client = MagicMock()
+
+        with (
+            patch.object(main.sso, "get_identity_store_id", return_value="d-123456"),
+            patch.object(
+                main.slack_helpers,
+                "get_user",
+                return_value=entities.slack.User(id="U_REPOP", email="repop@test.com", real_name="Repop User"),
+            ),
+            patch.object(main.sso, "get_user_principal_id_by_email", return_value=("principal-repop", None)),
+            patch.object(main.sso, "get_user_group_ids", return_value={"group-x"}),
+        ):
+            main._get_cached_user_info(view_key, "U_REPOP", mock_client)
+
+        assert main.user_view_map[f"{view_key}:group_ids"] == {"group-x"}
+        assert main.user_view_map[f"{view_key}:user_principal_id"] == "principal-repop"
+        assert main.user_view_map[f"{view_key}:user_email"] == "repop@test.com"
+
+    def test_second_call_after_refetch_uses_cache(self, import_main):
+        """After a cache miss repopulates, the next call uses the cache."""
+        main = import_main
+        main.user_view_map.clear()
+
+        view_key = "U_TWICE:request_for__account_access_submitted"
+        mock_client = MagicMock()
+
+        with (
+            patch.object(main.sso, "get_identity_store_id", return_value="d-123456"),
+            patch.object(
+                main.slack_helpers,
+                "get_user",
+                return_value=entities.slack.User(id="U_TWICE", email="twice@test.com", real_name="Twice User"),
+            ),
+            patch.object(main.sso, "get_user_principal_id_by_email", return_value=("principal-twice", None)),
+            patch.object(main.sso, "get_user_group_ids", return_value={"group-y"}) as mock_get_groups,
+        ):
+            # First call: cache miss, re-fetches
+            main._get_cached_user_info(view_key, "U_TWICE", mock_client)
+            assert mock_get_groups.call_count == 1
+
+            # Second call: cache hit, no re-fetch
+            group_ids, email = main._get_cached_user_info(view_key, "U_TWICE", mock_client)
+            assert mock_get_groups.call_count == 1  # still 1, not 2
+
+        assert group_ids == {"group-y"}
+        assert email == "twice@test.com"
