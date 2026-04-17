@@ -736,3 +736,168 @@ class TestGetCachedUserInfo:
 
         assert group_ids == {"group-y"}
         assert email == "twice@test.com"
+
+
+class TestShowButtonsForApproverGroups:
+    """Approve/Deny buttons must render whenever a decision has approvers OR approver_groups.
+
+    Regression: previously `show_buttons = bool(decision.approvers)` ignored approver_groups,
+    leaving requests that only mentioned groups un-actionable in Slack.
+    """
+
+    def _build_request(self):
+        import slack_helpers
+
+        return slack_helpers.RequestForAccess(
+            permission_set_name="TestPermissionSet",
+            account_id="111111111111",
+            reason="Testing",
+            requester_slack_id="U_REQUESTER",
+            permission_duration=timedelta(hours=1),
+        )
+
+    def _decision(self, reason, approvers=frozenset(), approver_groups=frozenset()):
+        import access_control
+
+        return access_control.AccessRequestDecision(
+            grant=False,
+            reason=reason,
+            based_on_statements=frozenset(),
+            approvers=approvers,
+            approver_groups=approver_groups,
+        )
+
+    def _setup_patches(self, main_module, decision):
+        import access_control
+
+        patches = [
+            patch.object(main_module.access_control, "make_decision_on_access_request", return_value=decision),
+            patch.object(
+                main_module.access_control,
+                "execute_decision",
+                return_value=access_control.ExecuteDecisionResult(granted=False),
+            ),
+            patch.object(
+                main_module.sso,
+                "get_permission_set",
+                return_value=entities.aws.PermissionSet(name="TestPermissionSet", arn="arn:sso:ps/test", description=None),
+            ),
+            patch.object(main_module.sso, "get_identity_store_id", return_value="d-123456"),
+            patch.object(main_module.sso, "get_user_principal_id_by_email", return_value=("principal-id", None)),
+            patch.object(
+                main_module.organizations,
+                "describe_account",
+                side_effect=lambda _c, account_id: entities.aws.Account(id=account_id, name=f"Account-{account_id}"),
+            ),
+            patch.object(main_module.slack_helpers, "build_approval_request_message_blocks", return_value=[]),
+            patch.object(main_module.slack_helpers, "check_if_user_is_in_channel", return_value=True),
+            patch.object(
+                main_module.slack_helpers,
+                "get_user",
+                return_value=entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester"),
+            ),
+            patch.object(main_module.slack_helpers, "find_approvers_in_slack", return_value=([], [])),
+            patch.object(main_module.slack_helpers, "build_approver_group_mentions", return_value="<!subteam^S_GROUP>"),
+            patch.object(main_module.analytics, "capture"),
+            patch.object(main_module.schedule, "schedule_discard_buttons_event"),
+            patch.object(main_module.schedule, "schedule_approver_notification_event"),
+        ]
+        return patches
+
+    def _run(self, main_module):
+        mock_client = MagicMock()
+        mock_client.chat_postMessage.return_value = {"ts": "123.456", "message": {"blocks": []}}
+        main_module._process_single_access_request(
+            request=self._build_request(),
+            requester=entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester"),
+            user_group_ids=set(),
+            client=mock_client,
+            is_user_in_channel=True,
+        )
+        return mock_client
+
+    def _show_buttons_kwarg(self, main_module):
+        build = main_module.slack_helpers.build_approval_request_message_blocks
+        assert build.called, "build_approval_request_message_blocks was not called"
+        return build.call_args.kwargs["show_buttons"]
+
+    def test_show_buttons_true_when_only_approver_groups(self, import_main):
+        """Regression: approver_groups alone must still render buttons."""
+        import access_control
+
+        main = import_main
+        decision = self._decision(
+            reason=access_control.DecisionReason.RequiresApproval,
+            approvers=frozenset(),
+            approver_groups=frozenset(["S_GROUP"]),
+        )
+        patches = self._setup_patches(main, decision)
+        for p in patches:
+            p.start()
+        try:
+            self._run(main)
+            assert self._show_buttons_kwarg(main) is True
+            main.schedule.schedule_discard_buttons_event.assert_called_once()
+            main.schedule.schedule_approver_notification_event.assert_called_once()
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_show_buttons_true_when_only_individual_approvers(self, import_main):
+        import access_control
+
+        main = import_main
+        decision = self._decision(
+            reason=access_control.DecisionReason.RequiresApproval,
+            approvers=frozenset(["approver@test.com"]),
+            approver_groups=frozenset(),
+        )
+        patches = self._setup_patches(main, decision)
+        for p in patches:
+            p.start()
+        try:
+            self._run(main)
+            assert self._show_buttons_kwarg(main) is True
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_show_buttons_true_when_both_set(self, import_main):
+        import access_control
+
+        main = import_main
+        decision = self._decision(
+            reason=access_control.DecisionReason.RequiresApproval,
+            approvers=frozenset(["approver@test.com"]),
+            approver_groups=frozenset(["S_GROUP"]),
+        )
+        patches = self._setup_patches(main, decision)
+        for p in patches:
+            p.start()
+        try:
+            self._run(main)
+            assert self._show_buttons_kwarg(main) is True
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_show_buttons_false_when_neither_set(self, import_main):
+        import access_control
+
+        main = import_main
+        decision = self._decision(
+            reason=access_control.DecisionReason.NoApprovers,
+            approvers=frozenset(),
+            approver_groups=frozenset(),
+        )
+        patches = self._setup_patches(main, decision)
+        for p in patches:
+            p.start()
+        try:
+            self._run(main)
+            assert self._show_buttons_kwarg(main) is False
+            main.schedule.schedule_discard_buttons_event.assert_not_called()
+            main.schedule.schedule_approver_notification_event.assert_not_called()
+        finally:
+            for p in patches:
+                p.stop()

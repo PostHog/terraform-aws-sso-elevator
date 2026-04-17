@@ -486,7 +486,7 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
         logger.warning("Failed to describe account, using account ID as fallback", extra={"account_id": request.account_id})
         account = entities.aws.Account(id=request.account_id, name=request.account_id)
 
-    show_buttons = bool(decision.approvers)
+    show_buttons = bool(decision.approvers) or bool(decision.approver_groups)
     slack_response = client.chat_postMessage(
         blocks=slack_helpers.build_approval_request_message_blocks(
             sso_client=sso_client,
