@@ -74,7 +74,7 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
         },
     )
 
-    show_buttons = bool(decision.approvers)
+    show_buttons = bool(decision.approvers) or bool(decision.approver_groups)
     slack_response = client.chat_postMessage(
         blocks=slack_helpers.build_approval_request_message_blocks(
             sso_client=sso_client,
