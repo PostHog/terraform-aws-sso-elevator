@@ -61,6 +61,12 @@ variable "slack_channel_id" {
   type        = string
 }
 
+variable "cleanup_alert_slack_group" {
+  description = "Slack handle (e.g. `<!subteam^S12345>`) prepended to rollback-failure alerts so an on-call admin is paged when SSO Elevator cannot auto-roll-back a grant whose scheduled revoke failed to create. Leave blank to post without a ping."
+  type        = string
+  default     = ""
+}
+
 variable "schedule_expression" {
   description = "recovation schedule expression (will revoke all user-level assignments unknown to the Elevator)"
   type        = string

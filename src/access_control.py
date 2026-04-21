@@ -369,9 +369,18 @@ def _rollback_account_grant_on_schedule_failure(  # noqa: PLR0913
     except Exception as rollback_error:
         logger.exception("Rollback of account assignment failed", extra={"rollback_error": str(rollback_error)})
 
-    status = "rolled back" if rollback_ok else "NOT rolled back — MANUAL CLEANUP REQUIRED"
+    if rollback_ok:
+        status = "rolled back"
+    else:
+        status = (
+            f"NOT rolled back — MANUAL CLEANUP REQUIRED in AWS IAM Identity Center. "
+            f"Go to AWS Console → IAM Identity Center → AWS accounts → account `{account_id}` → "
+            f"find principal `{account_assignment.user_principal_id}` with permission set "
+            f"`{permission_set_name}` → remove assignment"
+        )
+    ping = f"{cfg.cleanup_alert_slack_group} " if cfg.cleanup_alert_slack_group else ""
     alert = (
-        f":rotating_light: SSO Elevator: failed to schedule auto-revoke for <@{requester.id}> "
+        f"{ping}:rotating_light: SSO Elevator: failed to schedule auto-revoke for <@{requester.id}> "
         f"on account `{account_id}` / permission set `{permission_set_name}` "
         f"(approver <@{approver.id}>). Grant was {status}. Error: `{error}`."
     )
@@ -500,9 +509,17 @@ def _rollback_group_grant_on_schedule_failure(
     except Exception as rollback_error:
         logger.exception("Rollback of group membership failed", extra={"rollback_error": str(rollback_error)})
 
-    status = "rolled back" if rollback_ok else "NOT rolled back — MANUAL CLEANUP REQUIRED"
+    if rollback_ok:
+        status = "rolled back"
+    else:
+        status = (
+            f"NOT rolled back — MANUAL CLEANUP REQUIRED in AWS IAM Identity Center. "
+            f"Go to AWS Console → IAM Identity Center → Groups → `{group_assignment.group_name}` → "
+            f"remove principal `{group_assignment.user_principal_id}` from the group"
+        )
+    ping = f"{cfg.cleanup_alert_slack_group} " if cfg.cleanup_alert_slack_group else ""
     alert = (
-        f":rotating_light: SSO Elevator: failed to schedule auto-revoke for <@{requester.id}> "
+        f"{ping}:rotating_light: SSO Elevator: failed to schedule auto-revoke for <@{requester.id}> "
         f"in group `{group_assignment.group_name}` (approver <@{approver.id}>). "
         f"Membership was {status}. Error: `{error}`."
     )

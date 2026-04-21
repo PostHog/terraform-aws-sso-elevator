@@ -88,9 +88,7 @@ class TestCreateScheduleWithRetry:
         build_input = MagicMock(return_value='{"k":"v"}')
 
         with pytest.raises(RuntimeError, match="after 3 attempts"):
-            schedule._create_schedule_with_retry(
-                client, name_prefix="pfx", build_input=build_input, create_kwargs=self._make_kwargs()
-            )
+            schedule._create_schedule_with_retry(client, name_prefix="pfx", build_input=build_input, create_kwargs=self._make_kwargs())
         assert client.create_schedule.call_count == 3
 
     def test_non_conflict_error_raises_immediately(self):
@@ -104,7 +102,5 @@ class TestCreateScheduleWithRetry:
         build_input = MagicMock(return_value='{"k":"v"}')
 
         with pytest.raises(botocore.exceptions.ClientError):
-            schedule._create_schedule_with_retry(
-                client, name_prefix="pfx", build_input=build_input, create_kwargs=self._make_kwargs()
-            )
+            schedule._create_schedule_with_retry(client, name_prefix="pfx", build_input=build_input, create_kwargs=self._make_kwargs())
         client.create_schedule.assert_called_once()

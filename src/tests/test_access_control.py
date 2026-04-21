@@ -1573,6 +1573,95 @@ class TestRollbackOnScheduleFailure:
             assert "rolled back" in posted.kwargs["text"]
             assert "<@U_REQ>" in posted.kwargs["text"]
 
+    def test_account_cleanup_message_names_console_path_and_ids(self):
+        """When rollback fails, the alert names the exact Identity Center console path + IDs."""
+        from unittest.mock import MagicMock, patch
+
+        import access_control
+
+        real_user_account_assignment = access_control.sso.UserAccountAssignment
+        decision = self._granted_decision()
+        info = {
+            "permission_set_name": "AdminAccess",
+            "account_id": "111111111111",
+            "permission_duration": datetime.timedelta(hours=1),
+            "approver": entities.slack.User(email="a@a", id="U_APP", real_name="Approver"),
+            "requester": entities.slack.User(email="r@r", id="U_REQ", real_name="Requester"),
+            "reason": "testing",
+        }
+        permission_set = MagicMock(arn="arn:aws:sso:::permissionSet/ssoins-x/ps-y", name="AdminAccess")
+
+        with (
+            patch.object(access_control, "sso") as mock_sso,
+            patch.object(access_control, "schedule") as mock_schedule,
+            patch.object(access_control, "organizations") as mock_orgs,
+            patch.object(access_control, "s3"),
+            patch.object(access_control, "event_publisher"),
+            patch.object(access_control, "slack_client") as mock_slack,
+        ):
+            mock_sso.get_identity_store_id.return_value = "d-123"
+            mock_sso.get_permission_set.return_value = permission_set
+            mock_sso.get_user_principal_id_by_email.return_value = ("user-abc-123", False)
+            mock_sso.create_account_assignment_and_wait_for_result.return_value = MagicMock(request_id="req-1")
+            mock_sso.UserAccountAssignment = real_user_account_assignment
+            mock_orgs.describe_account.return_value = MagicMock(name="prod")
+            mock_schedule.schedule_revoke_event.side_effect = RuntimeError("boom")
+            mock_sso.delete_account_assignment_and_wait_for_result.side_effect = RuntimeError("rollback failed")
+
+            with pytest.raises(RuntimeError):
+                access_control.execute_decision(decision=decision, **info)
+
+            text = mock_slack.chat_postMessage.call_args.kwargs["text"]
+            assert "AWS IAM Identity Center" in text
+            assert "AWS accounts" in text
+            assert "111111111111" in text
+            assert "user-abc-123" in text
+            assert "AdminAccess" in text
+            assert "remove assignment" in text
+
+    def test_account_alert_prepends_configured_slack_group_ping(self):
+        """If cfg.cleanup_alert_slack_group is set, the alert is prefixed with that handle."""
+        from unittest.mock import MagicMock, patch
+
+        import access_control
+
+        real_user_account_assignment = access_control.sso.UserAccountAssignment
+        decision = self._granted_decision()
+        info = {
+            "permission_set_name": "AdminAccess",
+            "account_id": "111111111111",
+            "permission_duration": datetime.timedelta(hours=1),
+            "approver": entities.slack.User(email="a@a", id="U_APP", real_name="Approver"),
+            "requester": entities.slack.User(email="r@r", id="U_REQ", real_name="Requester"),
+            "reason": "testing",
+        }
+        permission_set = MagicMock(arn="arn:aws:sso:::permissionSet/ssoins-x/ps-y", name="AdminAccess")
+
+        # cfg is a frozen pydantic BaseSettings, so we swap it with a copy containing the override.
+        cfg_with_ping = access_control.cfg.model_copy(update={"cleanup_alert_slack_group": "<!subteam^S12345>"})
+        with (
+            patch.object(access_control, "cfg", cfg_with_ping),
+            patch.object(access_control, "sso") as mock_sso,
+            patch.object(access_control, "schedule") as mock_schedule,
+            patch.object(access_control, "organizations") as mock_orgs,
+            patch.object(access_control, "s3"),
+            patch.object(access_control, "event_publisher"),
+            patch.object(access_control, "slack_client") as mock_slack,
+        ):
+            mock_sso.get_identity_store_id.return_value = "d-123"
+            mock_sso.get_permission_set.return_value = permission_set
+            mock_sso.get_user_principal_id_by_email.return_value = ("user-abc-123", False)
+            mock_sso.create_account_assignment_and_wait_for_result.return_value = MagicMock(request_id="req-1")
+            mock_sso.UserAccountAssignment = real_user_account_assignment
+            mock_orgs.describe_account.return_value = MagicMock(name="prod")
+            mock_schedule.schedule_revoke_event.side_effect = RuntimeError("boom")
+
+            with pytest.raises(RuntimeError):
+                access_control.execute_decision(decision=decision, **info)
+
+            text = mock_slack.chat_postMessage.call_args.kwargs["text"]
+            assert text.startswith("<!subteam^S12345> ")
+
     def test_account_alert_notes_manual_cleanup_when_rollback_also_fails(self):
         from unittest.mock import MagicMock, patch
 
@@ -1657,3 +1746,48 @@ class TestGroupRollbackOnScheduleFailure:
             assert "failed to schedule auto-revoke" in posted.kwargs["text"]
             assert "Admins" in posted.kwargs["text"]
             assert "rolled back" in posted.kwargs["text"]
+
+    def test_group_cleanup_message_names_console_path_and_ids_on_rollback_failure(self):
+        from unittest.mock import patch
+
+        import access_control
+
+        real_group_assignment = access_control.sso.GroupAssignment
+        decision = AccessRequestDecision(
+            grant=True,
+            reason=DecisionReason.ApprovalNotRequired,
+            based_on_statements=frozenset(),
+        )
+        group = entities.aws.SSOGroup(id="g-1", name="Admins", description=None, identity_store_id="d-123")
+        info = {
+            "group": group,
+            "permission_duration": datetime.timedelta(hours=1),
+            "approver": entities.slack.User(email="a@a", id="U_APP", real_name="Approver"),
+            "requester": entities.slack.User(email="r@r", id="U_REQ", real_name="Requester"),
+            "reason": "testing",
+            "identity_store_id": "d-123",
+        }
+
+        with (
+            patch.object(access_control, "sso") as mock_sso,
+            patch.object(access_control, "schedule") as mock_schedule,
+            patch.object(access_control, "s3"),
+            patch.object(access_control, "slack_client") as mock_slack,
+        ):
+            mock_sso.get_user_principal_id_by_email.return_value = ("user-abc-123", False)
+            mock_sso.is_user_in_group.return_value = None
+            mock_sso.add_user_to_a_group.return_value = {"MembershipId": "m-1"}
+            mock_sso.GroupAssignment = real_group_assignment
+            mock_schedule.schedule_group_revoke_event.side_effect = RuntimeError("boom")
+            mock_sso.remove_user_from_group.side_effect = RuntimeError("rollback failed")
+
+            with pytest.raises(RuntimeError):
+                access_control.execute_decision_on_group_request(decision=decision, **info)
+
+            text = mock_slack.chat_postMessage.call_args.kwargs["text"]
+            assert "MANUAL CLEANUP REQUIRED" in text
+            assert "AWS IAM Identity Center" in text
+            assert "Groups" in text
+            assert "Admins" in text
+            assert "user-abc-123" in text
+            assert "remove principal" in text
