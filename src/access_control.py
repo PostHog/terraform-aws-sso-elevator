@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Callable, FrozenSet
 
 import boto3
+import slack_sdk
 
 import config
 import entities
@@ -22,6 +23,7 @@ org_client = session.client("organizations")
 sso_client = session.client("sso-admin")
 identitystore_client = session.client("identitystore")
 schedule_client = session.client("scheduler")
+slack_client = slack_sdk.WebClient(token=cfg.slack_bot_token)
 
 
 class DecisionReason(Enum):
@@ -309,18 +311,29 @@ def execute_decision(  # noqa: PLR0913
     # Check if any matching statement enables extend expired grant
     can_extend = any(getattr(s, "can_extend_expired_grant", False) for s in decision.based_on_statements)
 
-    _, schedule_name = schedule.schedule_revoke_event(
-        permission_duration=permission_duration,
-        schedule_client=schedule_client,
-        approver=approver,
-        requester=requester,
-        user_account_assignment=account_assignment,
-        thread_ts=thread_ts,
-        permission_set_name=permission_set.name,
-        account_name=account.name,
-        can_extend_expired_grant=can_extend,
-        extensions_count=0,
-    )
+    try:
+        _, schedule_name = schedule.schedule_revoke_event(
+            permission_duration=permission_duration,
+            schedule_client=schedule_client,
+            approver=approver,
+            requester=requester,
+            user_account_assignment=account_assignment,
+            thread_ts=thread_ts,
+            permission_set_name=permission_set.name,
+            account_name=account.name,
+            can_extend_expired_grant=can_extend,
+            extensions_count=0,
+        )
+    except Exception as e:
+        _rollback_account_grant_on_schedule_failure(
+            error=e,
+            account_assignment=account_assignment,
+            permission_set_name=permission_set.name,
+            account_id=account_id,
+            requester=requester,
+            approver=approver,
+        )
+        raise
 
     return ExecuteDecisionResult(
         granted=True,
@@ -332,6 +345,40 @@ def execute_decision(  # noqa: PLR0913
         user_principal_id=sso_user_principal_id,
         can_extend_expired_grant=can_extend,
     )
+
+
+def _rollback_account_grant_on_schedule_failure(  # noqa: PLR0913
+    error: Exception,
+    account_assignment: sso.UserAccountAssignment,
+    permission_set_name: str,
+    account_id: str,
+    requester: entities.slack.User,
+    approver: entities.slack.User,
+) -> None:
+    """Best-effort cleanup when revoke-scheduling fails after the SSO grant already succeeded.
+    Revokes the assignment and alerts the channel so an admin is aware regardless."""
+    logger.error(
+        "schedule_revoke_event failed after SSO grant succeeded; attempting rollback",
+        extra={"error": str(error), "account_assignment": account_assignment},
+    )
+    rollback_ok = False
+    try:
+        sso.delete_account_assignment_and_wait_for_result(sso_client, account_assignment)
+        rollback_ok = True
+        logger.info("Rolled back account assignment after schedule failure", extra={"account_assignment": account_assignment})
+    except Exception as rollback_error:
+        logger.exception("Rollback of account assignment failed", extra={"rollback_error": str(rollback_error)})
+
+    status = "rolled back" if rollback_ok else "NOT rolled back — MANUAL CLEANUP REQUIRED"
+    alert = (
+        f":rotating_light: SSO Elevator: failed to schedule auto-revoke for <@{requester.id}> "
+        f"on account `{account_id}` / permission set `{permission_set_name}` "
+        f"(approver <@{approver.id}>). Grant was {status}. Error: `{error}`."
+    )
+    try:
+        slack_client.chat_postMessage(channel=cfg.slack_channel_id, text=alert)
+    except Exception as slack_error:
+        logger.exception("Failed to post schedule-failure alert to Slack", extra={"slack_error": str(slack_error)})
 
 
 def execute_decision_on_group_request(  # noqa: PLR0913
@@ -391,22 +438,32 @@ def execute_decision_on_group_request(  # noqa: PLR0913
     # Check if any matching statement enables extend expired grant
     can_extend = any(getattr(s, "can_extend_expired_grant", False) for s in decision.based_on_statements)
 
-    _, schedule_name = schedule.schedule_group_revoke_event(
-        permission_duration=permission_duration,
-        schedule_client=schedule_client,
-        approver=approver,
-        requester=requester,
-        group_assignment=sso.GroupAssignment(
-            identity_store_id=identity_store_id,
-            group_name=group.name,
-            group_id=group.id,
-            user_principal_id=sso_user_principal_id,
-            membership_id=membership_id,
-        ),
-        thread_ts=thread_ts,
-        can_extend_expired_grant=can_extend,
-        extensions_count=0,
+    group_assignment = sso.GroupAssignment(
+        identity_store_id=identity_store_id,
+        group_name=group.name,
+        group_id=group.id,
+        user_principal_id=sso_user_principal_id,
+        membership_id=membership_id,
     )
+    try:
+        _, schedule_name = schedule.schedule_group_revoke_event(
+            permission_duration=permission_duration,
+            schedule_client=schedule_client,
+            approver=approver,
+            requester=requester,
+            group_assignment=group_assignment,
+            thread_ts=thread_ts,
+            can_extend_expired_grant=can_extend,
+            extensions_count=0,
+        )
+    except Exception as e:
+        _rollback_group_grant_on_schedule_failure(
+            error=e,
+            group_assignment=group_assignment,
+            requester=requester,
+            approver=approver,
+        )
+        raise
 
     return ExecuteDecisionResult(
         granted=True,
@@ -418,3 +475,38 @@ def execute_decision_on_group_request(  # noqa: PLR0913
         user_principal_id=sso_user_principal_id,
         can_extend_expired_grant=can_extend,
     )
+
+
+def _rollback_group_grant_on_schedule_failure(
+    error: Exception,
+    group_assignment: sso.GroupAssignment,
+    requester: entities.slack.User,
+    approver: entities.slack.User,
+) -> None:
+    """Best-effort cleanup when group revoke-scheduling fails after the membership was added."""
+    logger.error(
+        "schedule_group_revoke_event failed after membership add succeeded; attempting rollback",
+        extra={"error": str(error), "group_assignment": group_assignment},
+    )
+    rollback_ok = False
+    try:
+        sso.remove_user_from_group(
+            group_assignment.identity_store_id,
+            group_assignment.membership_id,
+            identitystore_client,
+        )
+        rollback_ok = True
+        logger.info("Rolled back group membership after schedule failure", extra={"group_assignment": group_assignment})
+    except Exception as rollback_error:
+        logger.exception("Rollback of group membership failed", extra={"rollback_error": str(rollback_error)})
+
+    status = "rolled back" if rollback_ok else "NOT rolled back — MANUAL CLEANUP REQUIRED"
+    alert = (
+        f":rotating_light: SSO Elevator: failed to schedule auto-revoke for <@{requester.id}> "
+        f"in group `{group_assignment.group_name}` (approver <@{approver.id}>). "
+        f"Membership was {status}. Error: `{error}`."
+    )
+    try:
+        slack_client.chat_postMessage(channel=cfg.slack_channel_id, text=alert)
+    except Exception as slack_error:
+        logger.exception("Failed to post schedule-failure alert to Slack", extra={"slack_error": str(slack_error)})
