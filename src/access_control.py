@@ -378,7 +378,7 @@ def _rollback_account_grant_on_schedule_failure(  # noqa: PLR0913
             f"find principal `{account_assignment.user_principal_id}` with permission set "
             f"`{permission_set_name}` → remove assignment"
         )
-    ping = f"{cfg.cleanup_alert_slack_group} " if cfg.cleanup_alert_slack_group else ""
+    ping = f"<!subteam^{cfg.cleanup_alert_slack_group}> " if cfg.cleanup_alert_slack_group else ""
     alert = (
         f"{ping}:rotating_light: SSO Elevator: failed to schedule auto-revoke for <@{requester.id}> "
         f"on account `{account_id}` / permission set `{permission_set_name}` "
@@ -517,7 +517,7 @@ def _rollback_group_grant_on_schedule_failure(
             f"Go to AWS Console → IAM Identity Center → Groups → `{group_assignment.group_name}` → "
             f"remove principal `{group_assignment.user_principal_id}` from the group"
         )
-    ping = f"{cfg.cleanup_alert_slack_group} " if cfg.cleanup_alert_slack_group else ""
+    ping = f"<!subteam^{cfg.cleanup_alert_slack_group}> " if cfg.cleanup_alert_slack_group else ""
     alert = (
         f"{ping}:rotating_light: SSO Elevator: failed to schedule auto-revoke for <@{requester.id}> "
         f"in group `{group_assignment.group_name}` (approver <@{approver.id}>). "

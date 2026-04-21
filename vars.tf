@@ -62,7 +62,7 @@ variable "slack_channel_id" {
 }
 
 variable "cleanup_alert_slack_group" {
-  description = "Slack handle (e.g. `<!subteam^S12345>`) prepended to rollback-failure alerts so an on-call admin is paged when SSO Elevator cannot auto-roll-back a grant whose scheduled revoke failed to create. Leave blank to post without a ping."
+  description = "Slack usergroup ID (e.g. `S12345`, same format as `approver_groups` entries) to ping on rollback-failure alerts so an on-call admin is paged when SSO Elevator cannot auto-roll-back a grant whose scheduled revoke failed to create. Leave blank to post without a ping."
   type        = string
   default     = ""
 }

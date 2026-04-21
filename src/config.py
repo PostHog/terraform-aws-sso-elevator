@@ -126,7 +126,7 @@ class Config(BaseSettings):
     post_update_to_slack: bool = False
     slack_channel_id: str
     slack_bot_token: str
-    # Optional Slack handle (e.g. `<!subteam^S12345>` or `@oncall`) prepended to
+    # Optional Slack usergroup ID (e.g. `S12345`) prepended as a mention to
     # rollback-failure alerts so an admin is paged when a grant can't be auto-rolled-back.
     cleanup_alert_slack_group: str = ""
 

@@ -1638,7 +1638,7 @@ class TestRollbackOnScheduleFailure:
         permission_set = MagicMock(arn="arn:aws:sso:::permissionSet/ssoins-x/ps-y", name="AdminAccess")
 
         # cfg is a frozen pydantic BaseSettings, so we swap it with a copy containing the override.
-        cfg_with_ping = access_control.cfg.model_copy(update={"cleanup_alert_slack_group": "<!subteam^S12345>"})
+        cfg_with_ping = access_control.cfg.model_copy(update={"cleanup_alert_slack_group": "S12345"})
         with (
             patch.object(access_control, "cfg", cfg_with_ping),
             patch.object(access_control, "sso") as mock_sso,
