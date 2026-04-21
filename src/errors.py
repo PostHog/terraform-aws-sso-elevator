@@ -43,9 +43,9 @@ def error_handler(client: WebClient, e: Exception, logger: Logger, context: Bolt
 
     if isinstance(e, SSOUserNotFound):
         text = (
-            f"<@{user_id}> Your request for AWS permissions failed because SSO Elevator could not find your user in AWS SSO. "
-            "This often happens if your AWS SSO email differs from your Slack email. "
-            "Check the logs for more details."
+            f"<@{user_id}> Your request for AWS permissions failed because your user was not found in AWS SSO. "
+            "This often happens if you haven't yet been added to AWS, or if your AWS SSO email differs from your Slack email. "
+            "Please check the SSO Elevator logs for more details."
         )
     else:
         text = f"<@{user_id}> Your request for AWS permissions encountered an unexpected error. Refer to the logs for more details."

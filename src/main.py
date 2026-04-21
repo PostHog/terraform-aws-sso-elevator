@@ -93,8 +93,8 @@ def build_initial_form_handler(
             client.chat_postMessage(
                 channel=cfg.slack_channel_id,
                 text=f"<@{body.get('user', {}).get('id') or 'UNKNOWN_USER'}>,"
-                "Your request for AWS permissions failed because SSO Elevator could not find your user in SSO. "
-                "This often happens if your AWS SSO email differs from your Slack email. "
+                "Your request for AWS permissions failed because your user was not found in AWS SSO. "
+                "This often happens if you haven't yet been added to AWS, or if your AWS SSO email differs from your Slack email. "
                 "Please check the SSO Elevator logs for more details.",
             )
             raise
