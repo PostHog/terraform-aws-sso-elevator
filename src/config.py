@@ -126,6 +126,9 @@ class Config(BaseSettings):
     post_update_to_slack: bool = False
     slack_channel_id: str
     slack_bot_token: str
+    # Optional Slack handle (e.g. `<!subteam^S12345>` or `@oncall`) prepended to
+    # rollback-failure alerts so an admin is paged when a grant can't be auto-rolled-back.
+    cleanup_alert_slack_group: str = ""
 
     approver_renotification_initial_wait_time: int
     approver_renotification_backoff_multiplier: int

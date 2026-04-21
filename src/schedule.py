@@ -1,5 +1,7 @@
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
 
 import botocore.exceptions
 import jmespath as jp
@@ -112,6 +114,48 @@ def delete_schedule(client: EventBridgeSchedulerClient, schedule_name: str) -> N
             raise e
 
 
+# AWS EventBridge schedule names: max 64 chars. `{prefix}{YYYY-MM-DD-HH-MM-SS}-{8-hex}`
+# gives us a 48-char name for the longest existing prefix (`sso-elevator-revoker`).
+def _build_schedule_name(prefix: str) -> str:
+    return f"{prefix}{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H-%M-%S')}-{uuid.uuid4().hex[:8]}"
+
+
+_CREATE_SCHEDULE_MAX_ATTEMPTS = 3
+
+
+def _create_schedule_with_retry(
+    client: EventBridgeSchedulerClient,
+    name_prefix: str,
+    build_input: Callable[[str], str],
+    create_kwargs: dict,
+) -> tuple[Any, str]:
+    """Create a schedule with a fresh random-suffixed name. Retry on ConflictException
+    with a newly-rolled name. `build_input` is a callable that receives the generated
+    schedule name and returns the JSON string for `Target.Input` — so the name embedded
+    inside the payload matches the schedule name actually used."""
+    last_error: Exception | None = None
+    for attempt in range(1, _CREATE_SCHEDULE_MAX_ATTEMPTS + 1):
+        schedule_name = _build_schedule_name(name_prefix)
+        target = dict(create_kwargs["Target"])
+        target["Input"] = build_input(schedule_name)
+        call_kwargs = {**create_kwargs, "Name": schedule_name, "Target": target}
+        try:
+            result = client.create_schedule(**call_kwargs)
+            return result, schedule_name
+        except botocore.exceptions.ClientError as e:
+            if jp.search("Error.Code", e.response) == "ConflictException":
+                logger.warning(
+                    "Schedule name collision, retrying with a fresh name",
+                    extra={"schedule_name": schedule_name, "attempt": attempt},
+                )
+                last_error = e
+                continue
+            raise
+    raise RuntimeError(
+        f"Failed to create schedule after {_CREATE_SCHEDULE_MAX_ATTEMPTS} attempts due to repeated ConflictException"
+    ) from last_error
+
+
 def get_and_delete_scheduled_revoke_event_if_already_exist(
     client: EventBridgeSchedulerClient,
     event: sso.UserAccountAssignment | sso.GroupAssignment,
@@ -149,40 +193,41 @@ def schedule_revoke_event(  # noqa: PLR0913
         Tuple of (CreateScheduleOutput, schedule_name)
     """
     logger.info("Scheduling revoke event")
-    schedule_name = f"{cfg.revoker_function_name}" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
     get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, user_account_assignment)
-    revoke_event = RevokeEvent(
-        schedule_name=schedule_name,
-        approver=approver,
-        requester=requester,
-        user_account_assignment=user_account_assignment,
-        permission_duration=permission_duration,
-        thread_ts=thread_ts,
-        permission_set_name=permission_set_name,
-        account_name=account_name,
-        can_extend_expired_grant=can_extend_expired_grant,
-        extensions_count=extensions_count,
-    )
-    logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
-    result = schedule_client.create_schedule(
-        ActionAfterCompletion="DELETE",
-        FlexibleTimeWindow={"Mode": "OFF"},
-        Name=schedule_name,
-        GroupName=cfg.schedule_group_name,
-        ScheduleExpression=event_bridge_schedule_after(permission_duration),
-        State="ENABLED",
-        Target=scheduler_type_defs.TargetTypeDef(
-            Arn=cfg.revoker_function_arn,
-            RoleArn=cfg.schedule_policy_arn,
-            Input=json.dumps(
-                {
-                    "action": "event_bridge_revoke",
-                    "revoke_event": revoke_event.json(),
-                },
+
+    def build_input(schedule_name: str) -> str:
+        revoke_event = RevokeEvent(
+            schedule_name=schedule_name,
+            approver=approver,
+            requester=requester,
+            user_account_assignment=user_account_assignment,
+            permission_duration=permission_duration,
+            thread_ts=thread_ts,
+            permission_set_name=permission_set_name,
+            account_name=account_name,
+            can_extend_expired_grant=can_extend_expired_grant,
+            extensions_count=extensions_count,
+        )
+        logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
+        return json.dumps({"action": "event_bridge_revoke", "revoke_event": revoke_event.json()})
+
+    return _create_schedule_with_retry(
+        schedule_client,
+        name_prefix=cfg.revoker_function_name,
+        build_input=build_input,
+        create_kwargs={
+            "ActionAfterCompletion": "DELETE",
+            "FlexibleTimeWindow": {"Mode": "OFF"},
+            "GroupName": cfg.schedule_group_name,
+            "ScheduleExpression": event_bridge_schedule_after(permission_duration),
+            "State": "ENABLED",
+            "Target": scheduler_type_defs.TargetTypeDef(
+                Arn=cfg.revoker_function_arn,
+                RoleArn=cfg.schedule_policy_arn,
+                Input="",  # replaced by build_input
             ),
-        ),
+        },
     )
-    return result, schedule_name
 
 
 def schedule_group_revoke_event(  # noqa: PLR0913
@@ -201,38 +246,39 @@ def schedule_group_revoke_event(  # noqa: PLR0913
         Tuple of (CreateScheduleOutput, schedule_name)
     """
     logger.info("Scheduling revoke event")
-    schedule_name = f"{cfg.revoker_function_name}" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
-    revoke_event = GroupRevokeEvent(
-        schedule_name=schedule_name,
-        approver=approver,
-        requester=requester,
-        group_assignment=group_assignment,
-        permission_duration=permission_duration,
-        thread_ts=thread_ts,
-        can_extend_expired_grant=can_extend_expired_grant,
-        extensions_count=extensions_count,
-    )
     get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, group_assignment)
-    logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
-    result = schedule_client.create_schedule(
-        ActionAfterCompletion="DELETE",
-        FlexibleTimeWindow={"Mode": "OFF"},
-        Name=schedule_name,
-        GroupName=cfg.schedule_group_name,
-        ScheduleExpression=event_bridge_schedule_after(permission_duration),
-        State="ENABLED",
-        Target=scheduler_type_defs.TargetTypeDef(
-            Arn=cfg.revoker_function_arn,
-            RoleArn=cfg.schedule_policy_arn,
-            Input=json.dumps(
-                {
-                    "action": "event_bridge_group_revoke",
-                    "revoke_event": revoke_event.json(),
-                },
+
+    def build_input(schedule_name: str) -> str:
+        revoke_event = GroupRevokeEvent(
+            schedule_name=schedule_name,
+            approver=approver,
+            requester=requester,
+            group_assignment=group_assignment,
+            permission_duration=permission_duration,
+            thread_ts=thread_ts,
+            can_extend_expired_grant=can_extend_expired_grant,
+            extensions_count=extensions_count,
+        )
+        logger.debug("Creating schedule", extra={"revoke_event": revoke_event})
+        return json.dumps({"action": "event_bridge_group_revoke", "revoke_event": revoke_event.json()})
+
+    return _create_schedule_with_retry(
+        schedule_client,
+        name_prefix=cfg.revoker_function_name,
+        build_input=build_input,
+        create_kwargs={
+            "ActionAfterCompletion": "DELETE",
+            "FlexibleTimeWindow": {"Mode": "OFF"},
+            "GroupName": cfg.schedule_group_name,
+            "ScheduleExpression": event_bridge_schedule_after(permission_duration),
+            "State": "ENABLED",
+            "Target": scheduler_type_defs.TargetTypeDef(
+                Arn=cfg.revoker_function_arn,
+                RoleArn=cfg.schedule_policy_arn,
+                Input="",  # replaced by build_input
             ),
-        ),
+        },
     )
-    return result, schedule_name
 
 
 def schedule_discard_buttons_event(
@@ -246,36 +292,44 @@ def schedule_discard_buttons_event(
     permission_duration = timedelta(hours=cfg.request_expiration_hours)
 
     logger.info("Scheduling discard buttons event")
-    schedule_name = "discard-buttons" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
-    logger.debug(
-        "Creating schedule",
-        extra={
-            "schedule_name": schedule_name,
-            "permission_duration": permission_duration,
-            "time_stamp": time_stamp,
-            "channel_id": channel_id,
+
+    def build_input(schedule_name: str) -> str:
+        logger.debug(
+            "Creating schedule",
+            extra={
+                "schedule_name": schedule_name,
+                "permission_duration": permission_duration,
+                "time_stamp": time_stamp,
+                "channel_id": channel_id,
+            },
+        )
+        return json.dumps(
+            DiscardButtonsEvent(
+                action="discard_buttons_event",
+                schedule_name=schedule_name,
+                time_stamp=time_stamp,
+                channel_id=channel_id,
+            ).dict()
+        )
+
+    result, _ = _create_schedule_with_retry(
+        schedule_client,
+        name_prefix="discard-buttons",
+        build_input=build_input,
+        create_kwargs={
+            "ActionAfterCompletion": "DELETE",
+            "FlexibleTimeWindow": {"Mode": "OFF"},
+            "GroupName": cfg.schedule_group_name,
+            "ScheduleExpression": event_bridge_schedule_after(permission_duration),
+            "State": "ENABLED",
+            "Target": scheduler_type_defs.TargetTypeDef(
+                Arn=cfg.revoker_function_arn,
+                RoleArn=cfg.schedule_policy_arn,
+                Input="",  # replaced by build_input
+            ),
         },
     )
-    return schedule_client.create_schedule(
-        ActionAfterCompletion="DELETE",
-        FlexibleTimeWindow={"Mode": "OFF"},
-        Name=schedule_name,
-        GroupName=cfg.schedule_group_name,
-        ScheduleExpression=event_bridge_schedule_after(permission_duration),
-        State="ENABLED",
-        Target=scheduler_type_defs.TargetTypeDef(
-            Arn=cfg.revoker_function_arn,
-            RoleArn=cfg.schedule_policy_arn,
-            Input=json.dumps(
-                DiscardButtonsEvent(
-                    action="discard_buttons_event",
-                    schedule_name=schedule_name,
-                    time_stamp=time_stamp,
-                    channel_id=channel_id,
-                ).dict()
-            ),
-        ),
-    )
+    return result
 
 
 def schedule_discard_extend_button_event(
@@ -286,28 +340,36 @@ def schedule_discard_extend_button_event(
     permission_duration = timedelta(hours=1)
 
     logger.info("Scheduling discard extend button event")
-    schedule_name = "discard-buttons-extend" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
-    return schedule_client.create_schedule(
-        ActionAfterCompletion="DELETE",
-        FlexibleTimeWindow={"Mode": "OFF"},
-        Name=schedule_name,
-        GroupName=cfg.schedule_group_name,
-        ScheduleExpression=event_bridge_schedule_after(permission_duration),
-        State="ENABLED",
-        Target=scheduler_type_defs.TargetTypeDef(
-            Arn=cfg.revoker_function_arn,
-            RoleArn=cfg.schedule_policy_arn,
-            Input=json.dumps(
-                DiscardButtonsEvent(
-                    action="discard_buttons_event",
-                    schedule_name=schedule_name,
-                    time_stamp=time_stamp,
-                    channel_id=channel_id,
-                    block_id="extend_grant_button",
-                ).dict()
+
+    def build_input(schedule_name: str) -> str:
+        return json.dumps(
+            DiscardButtonsEvent(
+                action="discard_buttons_event",
+                schedule_name=schedule_name,
+                time_stamp=time_stamp,
+                channel_id=channel_id,
+                block_id="extend_grant_button",
+            ).dict()
+        )
+
+    result, _ = _create_schedule_with_retry(
+        schedule_client,
+        name_prefix="discard-buttons-extend",
+        build_input=build_input,
+        create_kwargs={
+            "ActionAfterCompletion": "DELETE",
+            "FlexibleTimeWindow": {"Mode": "OFF"},
+            "GroupName": cfg.schedule_group_name,
+            "ScheduleExpression": event_bridge_schedule_after(permission_duration),
+            "State": "ENABLED",
+            "Target": scheduler_type_defs.TargetTypeDef(
+                Arn=cfg.revoker_function_arn,
+                RoleArn=cfg.schedule_policy_arn,
+                Input="",  # replaced by build_input
             ),
-        ),
+        },
     )
+    return result
 
 
 def schedule_approver_notification_event(
@@ -322,34 +384,42 @@ def schedule_approver_notification_event(
         return
 
     logger.info("Scheduling approver notification event")
-    schedule_name = "approvers-renotification" + datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
-    logger.debug(
-        "Creating schedule",
-        extra={
-            "schedule_name": schedule_name,
-            "time_to_wait": time_to_wait,
-            "time_stamp": message_ts,
-            "channel_id": channel_id,
+
+    def build_input(schedule_name: str) -> str:
+        logger.debug(
+            "Creating schedule",
+            extra={
+                "schedule_name": schedule_name,
+                "time_to_wait": time_to_wait,
+                "time_stamp": message_ts,
+                "channel_id": channel_id,
+            },
+        )
+        return json.dumps(
+            ApproverNotificationEvent(
+                action="approvers_renotification",
+                schedule_name=schedule_name,
+                time_stamp=message_ts,
+                channel_id=channel_id,
+                time_to_wait_in_seconds=time_to_wait.total_seconds(),
+            ).dict()
+        )
+
+    result, _ = _create_schedule_with_retry(
+        schedule_client,
+        name_prefix="approvers-renotification",
+        build_input=build_input,
+        create_kwargs={
+            "ActionAfterCompletion": "DELETE",
+            "FlexibleTimeWindow": {"Mode": "OFF"},
+            "GroupName": cfg.schedule_group_name,
+            "ScheduleExpression": event_bridge_schedule_after(time_to_wait),
+            "State": "ENABLED",
+            "Target": scheduler_type_defs.TargetTypeDef(
+                Arn=cfg.revoker_function_arn,
+                RoleArn=cfg.schedule_policy_arn,
+                Input="",  # replaced by build_input
+            ),
         },
     )
-    return schedule_client.create_schedule(
-        ActionAfterCompletion="DELETE",
-        FlexibleTimeWindow={"Mode": "OFF"},
-        Name=schedule_name,
-        GroupName=cfg.schedule_group_name,
-        ScheduleExpression=event_bridge_schedule_after(time_to_wait),
-        State="ENABLED",
-        Target=scheduler_type_defs.TargetTypeDef(
-            Arn=cfg.revoker_function_arn,
-            RoleArn=cfg.schedule_policy_arn,
-            Input=json.dumps(
-                ApproverNotificationEvent(
-                    action="approvers_renotification",
-                    schedule_name=schedule_name,
-                    time_stamp=message_ts,
-                    channel_id=channel_id,
-                    time_to_wait_in_seconds=time_to_wait.total_seconds(),
-                ).dict()
-            ),
-        ),
-    )
+    return result

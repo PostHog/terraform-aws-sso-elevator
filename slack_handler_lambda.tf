@@ -52,6 +52,8 @@ module "access_requester_slack_handler" {
       SLACK_CHANNEL_ID     = var.slack_channel_id
       SCHEDULE_GROUP_NAME  = var.schedule_group_name
 
+      CLEANUP_ALERT_SLACK_GROUP = var.cleanup_alert_slack_group
+
       POST_UPDATE_TO_SLACK = var.revoker_post_update_to_slack
 
       SSO_INSTANCE_ARN                            = local.sso_instance_arn
