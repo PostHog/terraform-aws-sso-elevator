@@ -186,6 +186,18 @@ def handle_early_account_revocation(  # noqa: PLR0913
         assignment_status = None
         already_revoked = True
     except Exception as e:
+        import jmespath as jp
+
+        error_code = jp.search("Error.Code", getattr(e, "response", {})) if hasattr(e, "response") else None
+        if error_code == "ConflictException":
+            # Another invocation (Slack retry or scheduled revoker) is already deleting this
+            # assignment. Let that handler finish the follow-up work (delete schedule, audit
+            # log, Slack update) — doing it here would duplicate those side effects.
+            logger.warning(
+                "Concurrent revocation already in progress, skipping",
+                extra={"schedule_name": schedule_name},
+            )
+            return None
         logger.error("Failed to delete account assignment during early revocation", extra={"error": str(e)})
         raise
 

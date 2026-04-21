@@ -478,3 +478,41 @@ class TestEarlyAccountRevocationAlreadyRevoked:
                 identitystore_client=MagicMock(),
                 cfg=mock_cfg,
             )
+
+    @patch("revoker.analytics")
+    @patch("revoker.s3")
+    @patch("revoker.schedule")
+    @patch("revoker.sso")
+    @patch("revoker.slack_helpers")
+    def test_conflict_exception_is_swallowed_and_skips_side_effects(self, _mock_sh, mock_sso, mock_schedule, mock_s3, _mock_analytics):
+        """A concurrent DeleteAccountAssignment (Slack retry, scheduled revoker) yields
+        ConflictException. The current invocation must no-op: don't re-raise, don't delete
+        the schedule, don't write an audit entry — the other in-flight handler owns those."""
+        import botocore.exceptions
+
+        import revoker
+
+        _, _, mock_cfg, mock_assignment = self._make_mocks()
+        conflict = botocore.exceptions.ClientError(
+            {"Error": {"Code": "ConflictException", "Message": "There is a conflicting operation in process."}},  # type: ignore[arg-type]
+            "DeleteAccountAssignment",
+        )
+        mock_sso.delete_account_assignment_and_wait_for_result.side_effect = conflict
+
+        result = revoker.handle_early_account_revocation(
+            user_account_assignment=mock_assignment,
+            schedule_name="test-schedule",
+            revoker_slack_id="U_REVOKER",
+            requester_slack_id="U_REQUESTER",
+            reason="testing",
+            sso_client=MagicMock(),
+            scheduler_client=MagicMock(),
+            org_client=MagicMock(),
+            slack_client=MagicMock(),
+            identitystore_client=MagicMock(),
+            cfg=mock_cfg,
+        )
+
+        assert result is None
+        mock_schedule.delete_schedule.assert_not_called()
+        mock_s3.log_operation.assert_not_called()
