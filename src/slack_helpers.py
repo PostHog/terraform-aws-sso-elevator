@@ -480,12 +480,11 @@ class HeaderSectionBlock:
 
 
 def button_click_info_block(action: entities.ApproverAction, approver_slack_id: str) -> SectionBlock:
-    return SectionBlock(
-        block_id="footer",
-        text=MarkdownTextObject(
-            text=f"<@{approver_slack_id}> pressed {action.value} button",
-        ),
-    )
+    return footer_info_block(f"<@{approver_slack_id}> pressed {action.value} button")
+
+
+def footer_info_block(text: str) -> SectionBlock:
+    return SectionBlock(block_id="footer", text=MarkdownTextObject(text=text))
 
 
 def check_if_user_is_in_channel(client: WebClient, channel_id: str, user_id: str) -> bool:
