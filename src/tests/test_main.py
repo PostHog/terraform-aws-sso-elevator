@@ -901,3 +901,164 @@ class TestShowButtonsForApproverGroups:
         finally:
             for p in patches:
                 p.stop()
+
+
+class TestDenyAuthorization:
+    """Deny must be authorized. Historically the Deny branch ran without any
+    authorization check — any channel member could deny anyone's request.
+
+    New rules:
+      - Requester can Deny their own pending request (self-cancel).
+      - Approvers (individual or via group) can Deny (existing behavior).
+      - Anyone else is rejected.
+    """
+
+    REQUESTER_ID = "U_REQUESTER"
+    APPROVER_ID = "U_APPROVER"
+    RANDOM_ID = "U_RANDOM"
+
+    def _payload(self, clicker_slack_id: str):
+        import slack_helpers
+
+        return slack_helpers.ButtonClickedPayload.model_construct(
+            action=entities.ApproverAction.Deny,
+            approver_slack_id=clicker_slack_id,
+            thread_ts="123.456",
+            channel_id="C12345",
+            message={"blocks": []},
+            request=slack_helpers.RequestForAccess(
+                permission_set_name="TestPermissionSet",
+                account_id="111111111111",
+                reason="Testing",
+                requester_slack_id=self.REQUESTER_ID,
+                permission_duration=timedelta(hours=1),
+            ),
+        )
+
+    def _user(self, user_id: str, email: str):
+        return entities.slack.User(id=user_id, email=email, real_name=user_id)
+
+    def _setup_patches(self, main_module, clicker_slack_id: str, clicker_email: str, decision_permit: bool):
+        import access_control
+        import slack_helpers
+
+        user_by_id = {
+            self.REQUESTER_ID: self._user(self.REQUESTER_ID, "requester@test.com"),
+            self.APPROVER_ID: self._user(self.APPROVER_ID, "approver@test.com"),
+            self.RANDOM_ID: self._user(self.RANDOM_ID, "random@test.com"),
+        }
+        # Ensure the clicker-specific user exists in the lookup
+        user_by_id[clicker_slack_id] = self._user(clicker_slack_id, clicker_email)
+
+        return [
+            patch.object(
+                slack_helpers.ButtonClickedPayload,
+                "model_validate",
+                return_value=self._payload(clicker_slack_id),
+            ),
+            patch.object(
+                main_module.slack_helpers,
+                "get_user",
+                side_effect=lambda _client, id: user_by_id[id],
+            ),
+            patch.object(main_module.slack_helpers, "check_if_user_is_in_channel", return_value=True),
+            patch.object(main_module.slack_helpers, "remove_blocks", return_value=[]),
+            patch.object(
+                main_module.slack_helpers.HeaderSectionBlock,
+                "set_status",
+                return_value=[],
+            ),
+            patch.object(
+                main_module.sso,
+                "get_permission_set",
+                return_value=entities.aws.PermissionSet(name="TestPermissionSet", arn="arn:sso:ps/test", description=None),
+            ),
+            patch.object(
+                main_module.access_control,
+                "make_decision_on_approve_request",
+                return_value=access_control.ApproveRequestDecision(
+                    grant=False,
+                    permit=decision_permit,
+                    based_on_statements=frozenset(),
+                ),
+            ),
+            patch.object(main_module.analytics, "capture"),
+        ]
+
+    def _run(self, main_module):
+        mock_client = MagicMock()
+        # Call via __wrapped__ to bypass the @handle_errors decorator's exception swallowing
+        handler = main_module.handle_button_click.__wrapped__
+        handler(body={"foo": "bar"}, client=mock_client, context=MagicMock())
+        main_module.cache_for_dublicate_requests.clear()
+        return mock_client
+
+    def test_requester_can_cancel_own_request(self, import_main):
+        main = import_main
+        patches = self._setup_patches(
+            main,
+            clicker_slack_id=self.REQUESTER_ID,
+            clicker_email="requester@test.com",
+            decision_permit=False,  # requester is NOT an approver, yet should still be allowed to cancel
+        )
+        for p in patches:
+            p.start()
+        try:
+            mock_client = self._run(main)
+            # chat_update called with cancellation text
+            update_calls = mock_client.chat_update.call_args_list
+            assert len(update_calls) == 1
+            assert update_calls[0].kwargs["text"] == f"Request was cancelled by <@{self.REQUESTER_ID}>."
+            # "not authorized" message must NOT be posted
+            post_texts = [c.kwargs.get("text", "") for c in mock_client.chat_postMessage.call_args_list]
+            assert not any("You cannot" in t for t in post_texts)
+            # Final confirmation message posted
+            assert any("cancelled" in t for t in post_texts)
+            # Analytics uses cancelled event
+            events = [c.kwargs["event"] for c in main.analytics.capture.call_args_list]
+            assert "aws_access_cancelled" in events
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_random_user_cannot_deny(self, import_main):
+        main = import_main
+        patches = self._setup_patches(
+            main,
+            clicker_slack_id=self.RANDOM_ID,
+            clicker_email="random@test.com",
+            decision_permit=False,
+        )
+        for p in patches:
+            p.start()
+        try:
+            mock_client = self._run(main)
+            # No chat_update — the pending message must remain intact
+            assert mock_client.chat_update.call_count == 0
+            # "You cannot deny" message posted
+            post_texts = [c.kwargs.get("text", "") for c in mock_client.chat_postMessage.call_args_list]
+            assert any("You cannot deny" in t for t in post_texts)
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_approver_can_still_deny(self, import_main):
+        main = import_main
+        patches = self._setup_patches(
+            main,
+            clicker_slack_id=self.APPROVER_ID,
+            clicker_email="approver@test.com",
+            decision_permit=True,  # approver is authorized
+        )
+        for p in patches:
+            p.start()
+        try:
+            mock_client = self._run(main)
+            update_calls = mock_client.chat_update.call_args_list
+            assert len(update_calls) == 1
+            assert update_calls[0].kwargs["text"] == f"Request was denied by <@{self.APPROVER_ID}>."
+            events = [c.kwargs["event"] for c in main.analytics.capture.call_args_list]
+            assert "aws_access_denied" in events
+        finally:
+            for p in patches:
+                p.stop()

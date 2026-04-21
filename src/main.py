@@ -93,8 +93,8 @@ def build_initial_form_handler(
             client.chat_postMessage(
                 channel=cfg.slack_channel_id,
                 text=f"<@{body.get('user', {}).get('id') or 'UNKNOWN_USER'}>,"
-                "Your request for AWS permissions failed because SSO Elevator could not find your user in SSO. "
-                "This often happens if your AWS SSO email differs from your Slack email. "
+                "Your request for AWS permissions failed because your user was not found in AWS SSO. "
+                "This often happens if you haven't yet been added to AWS, or if your AWS SSO email differs from your Slack email. "
                 "Please check the SSO Elevator logs for more details.",
             )
             raise
@@ -263,45 +263,6 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
     # Look up permission set to get ARN for matching and name for display
     permission_set = sso.get_permission_set(sso_client, cfg.sso_instance_arn, payload.request.permission_set_name)
 
-    if payload.action == entities.ApproverAction.Deny:
-        blocks = slack_helpers.HeaderSectionBlock.set_status(
-            blocks=payload.message["blocks"],
-            status_text=cfg.denied_status,
-        )
-
-        blocks = slack_helpers.remove_blocks(blocks, block_ids=["buttons"])
-        blocks.append(slack_helpers.button_click_info_block(payload.action, approver.id).to_dict())
-
-        text = f"Request was denied by <@{approver.id}>."
-        dm_text = f"Your request was denied by <@{approver.id}>."
-        client.chat_update(
-            channel=payload.channel_id,
-            ts=payload.thread_ts,
-            blocks=blocks,
-            text=text,
-        )
-
-        analytics.capture(
-            event="aws_access_denied",
-            distinct_id=requester.email,
-            properties={
-                "account_id": payload.request.account_id,
-                "permission_set": permission_set.name,
-                "approver_email": approver.email,
-                "requester_email": requester.email,
-            },
-        )
-
-        cache_for_dublicate_requests.clear()
-        if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
-            logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")
-            client.chat_postMessage(channel=requester.id, text=dm_text)
-        return client.chat_postMessage(
-            channel=payload.channel_id,
-            text=text,
-            thread_ts=payload.thread_ts,
-        )
-
     # Create a resolver function that resolves approver groups per-statement
     # This prevents cross-statement authorization bypass where someone in GroupY
     # could approve requests for Statement A just because Statement A has some groups
@@ -317,6 +278,8 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
         resolver_cache[group_ids] = result
         return result
 
+    is_self_cancel = payload.approver_slack_id == payload.request.requester_slack_id and payload.action == entities.ApproverAction.Deny
+
     decision = access_control.make_decision_on_approve_request(
         action=payload.action,
         statements=cfg.statements,
@@ -330,11 +293,59 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
     )
     logger.info("Decision on request was made", extra={"decision": decision.dict()})
 
-    if not decision.permit:
+    if not decision.permit and not is_self_cancel:
         cache_for_dublicate_requests.clear()
+        verb = "deny" if payload.action == entities.ApproverAction.Deny else "approve"
         return client.chat_postMessage(
             channel=payload.channel_id,
-            text=f"<@{approver.id}> You cannot approve this request.",
+            text=f"<@{approver.id}> You cannot {verb} this request.",
+            thread_ts=payload.thread_ts,
+        )
+
+    if payload.action == entities.ApproverAction.Deny:
+        blocks = slack_helpers.HeaderSectionBlock.set_status(
+            blocks=payload.message["blocks"],
+            status_text=cfg.denied_status,
+        )
+
+        blocks = slack_helpers.remove_blocks(blocks, block_ids=["buttons"])
+        if is_self_cancel:
+            footer_text = f"<@{requester.id}> cancelled the request"
+            text = f"Request was cancelled by <@{requester.id}>."
+            dm_text = None
+            analytics_event = "aws_access_cancelled"
+        else:
+            footer_text = f"<@{approver.id}> pressed {payload.action.value} button"
+            text = f"Request was denied by <@{approver.id}>."
+            dm_text = f"Your request was denied by <@{approver.id}>."
+            analytics_event = "aws_access_denied"
+        blocks.append(slack_helpers.footer_info_block(footer_text).to_dict())
+
+        client.chat_update(
+            channel=payload.channel_id,
+            ts=payload.thread_ts,
+            blocks=blocks,
+            text=text,
+        )
+
+        analytics.capture(
+            event=analytics_event,
+            distinct_id=requester.email,
+            properties={
+                "account_id": payload.request.account_id,
+                "permission_set": permission_set.name,
+                "approver_email": approver.email,
+                "requester_email": requester.email,
+            },
+        )
+
+        cache_for_dublicate_requests.clear()
+        if dm_text is not None and cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
+            logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")
+            client.chat_postMessage(channel=requester.id, text=dm_text)
+        return client.chat_postMessage(
+            channel=payload.channel_id,
+            text=text,
             thread_ts=payload.thread_ts,
         )
 
