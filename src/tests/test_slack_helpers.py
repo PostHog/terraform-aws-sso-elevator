@@ -457,6 +457,31 @@ class TestResolveApproverGroups:
         assert users[0].id == "U1"
         assert failed_groups == ["BAD_GROUP"]
 
+    def test_skips_bot_app_and_deleted_users(self):
+        """Bot users, app users, and deactivated users are silently skipped."""
+        mock_client = MagicMock()
+
+        mock_client.usergroups_users_list.return_value = {"users": ["U_HUMAN", "U_BOT", "U_APP", "U_DELETED"]}
+
+        def mock_users_info(user):
+            users = {
+                "U_HUMAN": {"user": {"id": "U_HUMAN", "profile": {"email": "human@test.com"}, "real_name": "Human"}},
+                "U_BOT": {"user": {"id": "U_BOT", "is_bot": True, "profile": {}, "real_name": "Bot"}},
+                "U_APP": {"user": {"id": "U_APP", "is_app_user": True, "profile": {}, "real_name": "App"}},
+                "U_DELETED": {"user": {"id": "U_DELETED", "deleted": True, "profile": {}, "real_name": "Gone"}},
+            }
+            response = MagicMock()
+            response.data = users.get(user, {})
+            return response
+
+        mock_client.users_info.side_effect = mock_users_info
+
+        users, failed_groups = resolve_approver_groups(mock_client, frozenset(["GROUP1"]))
+
+        assert len(users) == 1
+        assert users[0].id == "U_HUMAN"
+        assert failed_groups == []
+
     def test_empty_group_is_not_failure(self):
         """Empty usergroups don't count as failures."""
         mock_client = MagicMock()

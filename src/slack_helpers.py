@@ -745,13 +745,18 @@ def resolve_approver_groups(client: WebClient, group_ids: frozenset[str]) -> tup
                 continue
 
             for user_id in member_ids:
-                if user_id not in seen_user_ids:
-                    try:
-                        user = get_user(client, id=user_id)
-                        users.append(user)
+                if user_id in seen_user_ids:
+                    continue
+                try:
+                    response = client.users_info(user=user_id)
+                    user_data = (response.data or {}).get("user", {}) if isinstance(response.data, dict) else {}
+                    if user_data.get("is_bot") or user_data.get("is_app_user") or user_data.get("deleted"):
                         seen_user_ids.add(user_id)
-                    except Exception as e:
-                        logger.warning(f"Failed to get user info for {user_id}: {e}")
+                        continue
+                    users.append(parse_user(response.data))  # type: ignore[arg-type]
+                    seen_user_ids.add(user_id)
+                except Exception as e:
+                    logger.warning(f"Failed to get user info for {user_id}: {e}")
         except Exception as e:
             logger.warning(f"Failed to resolve usergroup {group_id}: {e}")
             failed_groups.append(group_id)
