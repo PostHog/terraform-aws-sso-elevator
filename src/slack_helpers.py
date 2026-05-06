@@ -63,6 +63,7 @@ class RequestForAccessView:
 
     LOADING_BLOCK_ID = "loading"
     PERMISSION_SET_PLACEHOLDER_BLOCK_ID = "permission_set_placeholder"
+    PERMISSION_SET_LOADING_BLOCK_ID = "permission_set_loading"
 
     @classmethod
     def build(cls) -> View:
@@ -206,6 +207,39 @@ class RequestForAccessView:
         )
 
     @classmethod
+    def build_permission_set_loading_block(cls) -> InputBlock:
+        return InputBlock(
+            block_id=cls.PERMISSION_SET_LOADING_BLOCK_ID,
+            label=PlainTextObject(text="Permission set"),
+            element=StaticSelectElement(
+                action_id=cls.PERMISSION_SET_ACTION_ID + "_loading",
+                placeholder=PlainTextObject(text=":hourglass: Loading permission sets..."),
+                options=[Option(text=PlainTextObject(text="—"), value="_loading")],
+            ),
+        )
+
+    @classmethod
+    def show_permission_set_loading(cls, view_blocks: list) -> View:
+        view = cls.build()
+        view.submit_disabled = True  # type: ignore[attr-defined]
+        blocks = remove_blocks(
+            view_blocks,
+            block_ids=[
+                cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+                cls.PERMISSION_SET_BLOCK_ID,
+                cls.PERMISSION_SET_LOADING_BLOCK_ID,
+                "no_eligible_accounts",
+            ],
+        )
+        blocks = insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[cls.build_permission_set_loading_block()],
+            after_block_id=cls.ACCOUNT_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return view
+
+    @classmethod
     def update_with_accounts(cls, accounts: list[entities.aws.Account]) -> View:
         view = cls.build()
         view.blocks = remove_blocks(view.blocks, block_ids=[cls.LOADING_BLOCK_ID])
@@ -230,7 +264,10 @@ class RequestForAccessView:
         view = cls.build()
         view.submit_disabled = False  # type: ignore[attr-defined]
         # Start from the current blocks, remove placeholder
-        blocks = remove_blocks(view_blocks, block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID])
+        blocks = remove_blocks(
+            view_blocks,
+            block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID, cls.PERMISSION_SET_LOADING_BLOCK_ID],
+        )
         # Insert permission set dropdown after account dropdown
         blocks = insert_blocks(
             blocks=blocks,
@@ -288,7 +325,7 @@ class RequestForAccessView:
         view.submit_disabled = True  # type: ignore[attr-defined]
         blocks = remove_blocks(
             view_blocks,
-            block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID],
+            block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID, cls.PERMISSION_SET_LOADING_BLOCK_ID],
         )
         blocks = insert_blocks(
             blocks=blocks,

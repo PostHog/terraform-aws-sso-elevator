@@ -5,6 +5,7 @@ import boto3
 import jmespath as jp
 from slack_bolt import Ack, App, BoltContext
 from slack_bolt.adapter.aws_lambda import SlackRequestHandler
+import slack_sdk.errors
 from slack_sdk import WebClient
 from slack_sdk.web.slack_response import SlackResponse
 
@@ -808,7 +809,7 @@ def _get_cached_user_info(view_key: str, user_id: str, client: "WebClient") -> t
 
 
 @app.action(slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID)
-def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackResponse:
+def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackResponse | None:
     ack()
     logger.info("Handling account selection")
 
@@ -824,11 +825,35 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
     logger.info(f"Selected accounts: {account_ids}")
 
     view_id = body["view"]["id"]
+    view_hash = body["view"].get("hash")
+
+    def safe_views_update(view) -> SlackResponse | None:  # noqa: ANN001, ANN202
+        nonlocal view_hash
+        try:
+            response = client.views_update(view_id=view_id, view=view, hash=view_hash)
+        except slack_sdk.errors.SlackApiError as e:
+            error = e.response.get("error") if e.response else None
+            # hash_conflict / view_expired = a newer handler already updated the view; skip silently.
+            if error in {"hash_conflict", "view_expired", "not_found"}:
+                logger.info(f"Skipping stale views_update: {error}")
+                return None
+            raise
+        new_hash = response.data.get("view", {}).get("hash") if response.data else None  # type: ignore[union-attr]
+        if new_hash:
+            view_hash = new_hash
+        return response
 
     # No accounts selected → show placeholder, disable submit
     if not account_ids:
         updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
-        return client.views_update(view_id=view_id, view=updated_view)
+        return safe_views_update(updated_view)
+
+    # Immediately replace stale permission set list with a loading placeholder before any AWS calls.
+    loading_response = safe_views_update(slack_helpers.RequestForAccessView.show_permission_set_loading(body["view"]["blocks"]))
+    if loading_response is None:
+        # A newer handler is already in flight; let it produce the final view.
+        return None
+    current_blocks = loading_response.data["view"]["blocks"]  # type: ignore[index]
 
     # Get cached user info, re-fetching from Identity Center on cache miss
     # (e.g. when Lambda container was recycled between form load and account selection)
@@ -842,8 +867,8 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
     logger.info(f"Valid permission sets for selected accounts and user: {valid_ps_names}")
 
     if not valid_ps_names:
-        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
-        return client.views_update(view_id=view_id, view=updated_view)
+        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=current_blocks)
+        return safe_views_update(updated_view)
 
     if "*" in valid_ps_names:
         permission_sets = sso.get_permission_sets_from_config_with_cache(sso_client=sso_client, s3_client=s3_client, cfg=cfg)
@@ -853,8 +878,8 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
 
     # Handle case where filtered list is empty (configured names don't exist in SSO)
     if not permission_sets:
-        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
-        return client.views_update(view_id=view_id, view=updated_view)
+        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=current_blocks)
+        return safe_views_update(updated_view)
 
     # Classify permission sets as auto-approved vs requires-approval
     auto_approved_arns: set[str] | None = None
@@ -882,12 +907,12 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
         )
 
     updated_view = slack_helpers.RequestForAccessView.update_with_permission_sets(
-        view_blocks=body["view"]["blocks"],
+        view_blocks=current_blocks,
         permission_sets=permission_sets,
         display_names=cfg.permission_set_display_names,
         auto_approved_arns=auto_approved_arns,
     )
-    return client.views_update(view_id=view_id, view=updated_view)
+    return safe_views_update(updated_view)
 
 
 # Early Revoke Handlers
