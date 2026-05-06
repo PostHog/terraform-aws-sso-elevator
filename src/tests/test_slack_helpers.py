@@ -635,14 +635,14 @@ class TestGetPermissionSetDisplayName:
     def test_match_by_name(self):
         ps = _ps("eks-developer")
         result = RequestForAccessView._get_permission_set_display_name(ps, display_names={"eks-developer": "EKS/kubectl access"})
-        assert result == "EKS/kubectl access"
+        assert result == "EKS/kubectl access (eks-developer)"
 
     def test_match_by_arn(self):
         ps = _ps("AdminAccess", arn="arn:aws:sso:::permissionSet/ssoins-abc/ps-admin")
         result = RequestForAccessView._get_permission_set_display_name(
             ps, display_names={"arn:aws:sso:::permissionSet/ssoins-abc/ps-admin": "Full Admin"}
         )
-        assert result == "Full Admin"
+        assert result == "Full Admin (AdminAccess)"
 
     def test_name_takes_priority_over_arn(self):
         ps = _ps("AdminAccess", arn="arn:aws:sso:::permissionSet/ssoins-abc/ps-admin")
@@ -653,12 +653,17 @@ class TestGetPermissionSetDisplayName:
                 "arn:aws:sso:::permissionSet/ssoins-abc/ps-admin": "By ARN",
             },
         )
-        assert result == "By Name"
+        assert result == "By Name (AdminAccess)"
 
     def test_no_match_falls_back_to_aws_name(self):
         ps = _ps("ReadOnly")
         result = RequestForAccessView._get_permission_set_display_name(ps, display_names={"SomethingElse": "Nope"})
         assert result == "ReadOnly"
+
+    def test_display_name_equal_to_aws_name_not_duplicated(self):
+        ps = _ps("AdminAccess")
+        result = RequestForAccessView._get_permission_set_display_name(ps, display_names={"AdminAccess": "AdminAccess"})
+        assert result == "AdminAccess"
 
     def test_long_name_truncated_to_75_chars(self):
         ps = _ps("AdminAccess")
@@ -675,15 +680,15 @@ class TestBuildSelectPermissionSetInputBlock:
         display = {"AdminAccess": "Full Admin", "ReadOnly": "Read-Only Access"}
         block = RequestForAccessView.build_select_permission_set_input_block(psets, display_names=display)
         texts = [_opt_text(opt) for opt in block.element.options]  # type: ignore[union-attr]
-        assert "Full Admin" in texts
-        assert "Read-Only Access" in texts
+        assert "Full Admin (AdminAccess)" in texts
+        assert "Read-Only Access (ReadOnly)" in texts
 
     def test_options_sorted_by_display_name(self):
         psets = [_ps("ZZZ-admin"), _ps("AAA-readonly")]
         display = {"ZZZ-admin": "Alpha", "AAA-readonly": "Beta"}
         block = RequestForAccessView.build_select_permission_set_input_block(psets, display_names=display)
         texts = [_opt_text(opt) for opt in block.element.options]  # type: ignore[union-attr]
-        assert texts == ["Alpha", "Beta"]
+        assert texts == ["Alpha (ZZZ-admin)", "Beta (AAA-readonly)"]
 
     def test_options_sorted_by_aws_name_without_display_names(self):
         psets = [_ps("Zebra"), _ps("Alpha")]
@@ -696,14 +701,14 @@ class TestBuildSelectPermissionSetInputBlock:
         display = {"Admin": "Friendly Label"}
         block = RequestForAccessView.build_select_permission_set_input_block(psets, display_names=display)
         assert block.element.options[0].value == "arn:aws:sso:::permissionSet/ssoins-abc/ps-123"  # type: ignore[union-attr]
-        assert _opt_text(block.element.options[0]) == "Friendly Label"  # type: ignore[union-attr]
+        assert _opt_text(block.element.options[0]) == "Friendly Label (Admin)"  # type: ignore[union-attr]
 
     def test_mixed_matched_and_unmatched(self):
         psets = [_ps("Mapped"), _ps("Unmapped")]
         display = {"Mapped": "Custom Label"}
         block = RequestForAccessView.build_select_permission_set_input_block(psets, display_names=display)
         text_map = {_opt_text(opt) for opt in block.element.options}  # type: ignore[union-attr]
-        assert text_map == {"Custom Label", "Unmapped"}
+        assert text_map == {"Custom Label (Mapped)", "Unmapped"}
 
     def test_auto_approved_arns_none_uses_flat_options(self):
         psets = [_ps("Admin"), _ps("ReadOnly")]
@@ -750,7 +755,7 @@ class TestBuildSelectPermissionSetInputBlock:
         )
         groups = block.element.option_groups  # type: ignore[union-attr]
         texts = [_opt_text(o) for o in groups[0].options]
-        assert texts == ["alpha", "bravo", "charlie"]
+        assert texts == ["alpha (ZZZ)", "bravo (MMM)", "charlie (AAA)"]
 
     def test_option_groups_use_display_names(self):
         ps = _ps("eks-developer")
@@ -761,7 +766,7 @@ class TestBuildSelectPermissionSetInputBlock:
             auto_approved_arns={ps.arn},
         )
         groups = block.element.option_groups  # type: ignore[union-attr]
-        assert _opt_text(groups[0].options[0]) == "EKS/kubectl access"
+        assert _opt_text(groups[0].options[0]) == "EKS/kubectl access (eks-developer)"
 
     def test_option_groups_value_is_arn(self):
         ps = _ps("Admin", arn="arn:aws:sso:::permissionSet/ssoins-abc/ps-123")
@@ -793,8 +798,8 @@ class TestUpdateWithPermissionSets:
         # Find the permission set block options
         ps_block = next(b for b in view.blocks if getattr(b, "block_id", None) == RequestForAccessView.PERMISSION_SET_BLOCK_ID)
         texts = [_opt_text(opt) for opt in ps_block.element.options]  # type: ignore[union-attr]
-        assert "Administrator" in texts
-        assert "Viewer" in texts
+        assert "Administrator (Admin)" in texts
+        assert "Viewer (ReadOnly)" in texts
 
     def test_none_display_names_uses_aws_names(self):
         blocks = self._make_view_blocks()

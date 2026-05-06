@@ -135,11 +135,10 @@ class RequestForAccessView:
         ps: entities.aws.PermissionSet,
         display_names: dict[str, str] | None = None,
     ) -> str:
-        if display_names is not None:
-            name = display_names.get(ps.name) or display_names.get(ps.arn) or ps.name
-        else:
-            name = ps.name
-        return name[:75]
+        custom = display_names.get(ps.name) or display_names.get(ps.arn) if display_names else None
+        if custom and custom != ps.name:
+            return f"{custom} ({ps.name})"[:75]
+        return ps.name[:75]
 
     @classmethod
     def _build_permission_set_option(cls, ps: entities.aws.PermissionSet, display_names: dict[str, str] | None) -> Option:
