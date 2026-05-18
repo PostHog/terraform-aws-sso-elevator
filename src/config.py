@@ -177,6 +177,7 @@ class Config(BaseSettings):
     denied_status: str = ":x: *DENIED*"
     timed_out_status: str = ":clock1: *TIMED OUT*"
     access_ended_status: str = ":checkered_flag: *SESSION COMPLETE*"
+    superseded_status: str = ":arrows_counterclockwise: *SUPERSEDED*"
 
     @model_validator(mode="before")
     @classmethod
