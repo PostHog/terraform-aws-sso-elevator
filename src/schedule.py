@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 import botocore.exceptions
 import jmespath as jp
+import slack_sdk
 from croniter import croniter
 from mypy_boto3_events import EventBridgeClient
 from mypy_boto3_events import type_defs as events_type_defs
@@ -14,6 +15,7 @@ from pydantic import ValidationError
 
 import config
 import entities
+import slack_helpers
 import sso
 from events import (
     ApproverNotificationEvent,
@@ -159,15 +161,54 @@ def _create_schedule_with_retry(
 def get_and_delete_scheduled_revoke_event_if_already_exist(
     client: EventBridgeSchedulerClient,
     event: sso.UserAccountAssignment | sso.GroupAssignment,
-) -> None:
+) -> list[str]:
+    """Delete any existing scheduled revoke for this assignment.
+
+    Returns the thread_ts of each orphaned grant message so the caller can flip its
+    header to SUPERSEDED. The extend-grant flow reuses the original thread_ts, so the
+    caller is expected to skip any orphan whose ts matches the new request's thread_ts.
+    """
+    orphaned_thread_ts: list[str] = []
     for scheduled_event in get_scheduled_events(client):
         logger.debug("Checking if schedule already exist", extra={"scheduled_event": scheduled_event})
         if isinstance(scheduled_event, ScheduledRevokeEvent) and scheduled_event.revoke_event.user_account_assignment == event:
             logger.info("Schedule already exist, deleting it", extra={"schedule_name": scheduled_event.revoke_event.schedule_name})
             delete_schedule(client, scheduled_event.revoke_event.schedule_name)
+            if scheduled_event.revoke_event.thread_ts:
+                orphaned_thread_ts.append(scheduled_event.revoke_event.thread_ts)
         if isinstance(scheduled_event, ScheduledGroupRevokeEvent) and scheduled_event.revoke_event.group_assignment == event:
             logger.info("Schedule already exist, deleting it", extra={"schedule_name": scheduled_event.revoke_event.schedule_name})
             delete_schedule(client, scheduled_event.revoke_event.schedule_name)
+            if scheduled_event.revoke_event.thread_ts:
+                orphaned_thread_ts.append(scheduled_event.revoke_event.thread_ts)
+    return orphaned_thread_ts
+
+
+def mark_superseded(slack_client: slack_sdk.WebClient, thread_ts: str) -> None:
+    """Flip an orphaned grant message's header to SUPERSEDED and remove its early-revoke button.
+
+    Called when a newer request replaces the schedule for the same assignment, leaving the
+    old grant message with no revoker to update it on expiry.
+    """
+    message = slack_helpers.get_message_from_timestamp(
+        channel_id=cfg.slack_channel_id,
+        message_ts=thread_ts,
+        slack_client=slack_client,
+    )
+    if message is None:
+        logger.warning("Could not find orphaned grant message to mark superseded", extra={"thread_ts": thread_ts})
+        return
+    blocks = slack_helpers.HeaderSectionBlock.set_status(
+        blocks=message["blocks"],
+        status_text=cfg.superseded_status,
+    )
+    slack_client.chat_update(
+        channel=cfg.slack_channel_id,
+        ts=thread_ts,
+        blocks=blocks,
+        text="Superseded by newer request",
+    )
+    slack_helpers.delete_early_revoke_button(slack_client, cfg.slack_channel_id, thread_ts)
 
 
 def event_bridge_schedule_after(td: timedelta) -> str:
@@ -181,6 +222,7 @@ def schedule_revoke_event(  # noqa: PLR0913
     approver: entities.slack.User,
     requester: entities.slack.User,
     user_account_assignment: sso.UserAccountAssignment,
+    slack_client: slack_sdk.WebClient,
     thread_ts: str | None = None,
     permission_set_name: str | None = None,
     account_name: str | None = None,
@@ -193,7 +235,12 @@ def schedule_revoke_event(  # noqa: PLR0913
         Tuple of (CreateScheduleOutput, schedule_name)
     """
     logger.info("Scheduling revoke event")
-    get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, user_account_assignment)
+    orphaned_thread_ts = get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, user_account_assignment)
+    for orphan_ts in orphaned_thread_ts:
+        # Extend-grant flow reuses thread_ts — don't flip the message we're about to keep using.
+        if orphan_ts == thread_ts:
+            continue
+        mark_superseded(slack_client, orphan_ts)
 
     def build_input(schedule_name: str) -> str:
         revoke_event = RevokeEvent(
@@ -236,6 +283,7 @@ def schedule_group_revoke_event(  # noqa: PLR0913
     approver: entities.slack.User,
     requester: entities.slack.User,
     group_assignment: sso.GroupAssignment,
+    slack_client: slack_sdk.WebClient,
     thread_ts: str | None = None,
     can_extend_expired_grant: bool = False,
     extensions_count: int = 0,
@@ -246,7 +294,11 @@ def schedule_group_revoke_event(  # noqa: PLR0913
         Tuple of (CreateScheduleOutput, schedule_name)
     """
     logger.info("Scheduling revoke event")
-    get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, group_assignment)
+    orphaned_thread_ts = get_and_delete_scheduled_revoke_event_if_already_exist(schedule_client, group_assignment)
+    for orphan_ts in orphaned_thread_ts:
+        if orphan_ts == thread_ts:
+            continue
+        mark_superseded(slack_client, orphan_ts)
 
     def build_input(schedule_name: str) -> str:
         revoke_event = GroupRevokeEvent(
