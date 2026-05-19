@@ -1,6 +1,6 @@
 """Tests for schedule name generation, ConflictException retry, and supersession."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import botocore.exceptions
@@ -605,3 +605,109 @@ class TestSupersessionEndToEnd:
         mock_get_msg.assert_not_called()
         mock_del_btn.assert_not_called()
         slack_client.chat_update.assert_not_called()
+
+
+class TestRevokeSchedulesPersistAfterFiring:
+    """Revoke schedules use ActionAfterCompletion=NONE so they don't race with the revoker."""
+
+    def test_account_revoke_schedule_uses_action_after_completion_none(self):
+        captured: dict = {}
+
+        def fake_create(client, name_prefix, build_input, create_kwargs):  # noqa: ARG001
+            captured.update(create_kwargs)
+            return ({"ScheduleArn": "arn:s"}, "new-sched")
+
+        with (
+            patch.object(schedule, "_create_schedule_with_retry", side_effect=fake_create),
+            patch.object(schedule, "get_and_delete_scheduled_revoke_event_if_already_exist", return_value=[]),
+        ):
+            schedule.schedule_revoke_event(
+                schedule_client=MagicMock(),
+                permission_duration=timedelta(hours=1),
+                approver=_make_user(),
+                requester=_make_user(),
+                user_account_assignment=_make_account_assignment(),
+                slack_client=MagicMock(),
+            )
+
+        assert captured["ActionAfterCompletion"] == "NONE"
+
+    def test_group_revoke_schedule_uses_action_after_completion_none(self):
+        captured: dict = {}
+
+        def fake_create(client, name_prefix, build_input, create_kwargs):  # noqa: ARG001
+            captured.update(create_kwargs)
+            return ({"ScheduleArn": "arn:s"}, "new-sched")
+
+        with (
+            patch.object(schedule, "_create_schedule_with_retry", side_effect=fake_create),
+            patch.object(schedule, "get_and_delete_scheduled_revoke_event_if_already_exist", return_value=[]),
+        ):
+            schedule.schedule_group_revoke_event(
+                schedule_client=MagicMock(),
+                permission_duration=timedelta(hours=1),
+                approver=_make_user(),
+                requester=_make_user(),
+                group_assignment=_make_group_assignment(),
+                slack_client=MagicMock(),
+            )
+
+        assert captured["ActionAfterCompletion"] == "NONE"
+
+
+class TestStuckPastDueScheduleFilter:
+    """get_scheduled_events drops past-due schedules beyond the grace period so the
+    inconsistency check / daily sweep can act on stuck failed-revoker schedules."""
+
+    def _at_expression(self, dt: datetime) -> str:
+        return f"at({dt.replace(microsecond=0, tzinfo=None).isoformat()})"
+
+    def test_future_at_time_is_considered_in_flight(self):
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        assert schedule._is_at_schedule_still_in_flight(self._at_expression(future)) is True
+
+    def test_recently_past_at_time_is_considered_in_flight(self):
+        # Inside the grace period — the revoker may still be processing.
+        recent = datetime.now(timezone.utc) - timedelta(minutes=1)
+        assert schedule._is_at_schedule_still_in_flight(self._at_expression(recent)) is True
+
+    def test_long_past_at_time_is_considered_stuck(self):
+        # Beyond grace — Lambda must have timed out / failed permanently.
+        old = datetime.now(timezone.utc) - timedelta(hours=2)
+        assert schedule._is_at_schedule_still_in_flight(self._at_expression(old)) is False
+
+    def test_non_at_expression_is_kept(self):
+        assert schedule._is_at_schedule_still_in_flight("rate(2 hours)") is True
+        assert schedule._is_at_schedule_still_in_flight("cron(0 23 * * ? *)") is True
+
+    def test_malformed_at_expression_is_kept(self):
+        assert schedule._is_at_schedule_still_in_flight("at(not-a-date)") is True
+
+    def test_get_scheduled_events_drops_stuck_schedule(self):
+        assignment = _make_account_assignment()
+        revoke_event = _make_scheduled_revoke_event(assignment)
+        live_payload = {
+            "action": "event_bridge_revoke",
+            "revoke_event": revoke_event.revoke_event.json(),
+        }
+        import json as _json
+
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        past = datetime.now(timezone.utc) - timedelta(hours=2)
+
+        live_schedule = {
+            "Name": "sso-elevator-revoker-live",
+            "ScheduleExpression": self._at_expression(future),
+            "Target": {"Input": _json.dumps(live_payload)},
+        }
+        stuck_schedule = {
+            "Name": "sso-elevator-revoker-stuck",
+            "ScheduleExpression": self._at_expression(past),
+            "Target": {"Input": _json.dumps(live_payload)},
+        }
+
+        with patch.object(schedule, "get_schedules", return_value=[live_schedule, stuck_schedule]):
+            events = schedule.get_scheduled_events(MagicMock())
+
+        assert len(events) == 1
+        assert isinstance(events[0], ScheduledRevokeEvent)

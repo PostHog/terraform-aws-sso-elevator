@@ -806,16 +806,12 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
             )
 
 
-def handle_check_on_inconsistency(  # noqa: PLR0913
+def _list_orphan_account_assignments(
     sso_client: SSOAdminClient,
     cfg: config.Config,
-    scheduler_client: EventBridgeSchedulerClient,
     org_client: OrganizationsClient,
-    slack_client: slack_sdk.WebClient,
-    identitystore_client: IdentityStoreClient,
-    events_client: EventBridgeClient,
-) -> int:
-    """Check for inconsistent account assignments and return the count of stale grants found."""
+    scheduler_client: EventBridgeSchedulerClient,
+) -> list[sso.AccountAssignment]:
     account_assignments = sso.get_account_assignment_information(sso_client, cfg, org_client)
     scheduled_revoke_events = schedule.get_scheduled_events(scheduler_client)
     account_assignments_from_events = [
@@ -828,59 +824,64 @@ def handle_check_on_inconsistency(  # noqa: PLR0913
         for scheduled_event in scheduled_revoke_events
         if isinstance(scheduled_event, ScheduledRevokeEvent)
     ]
-
-    stale_count = 0
-    for account_assignment in account_assignments:
-        if account_assignment not in account_assignments_from_events:
-            stale_count += 1
-            try:
-                account = organizations.describe_account(org_client, account_assignment.account_id)
-            except Exception:
-                logger.warning(
-                    "Failed to describe account, using account ID as fallback", extra={"account_id": account_assignment.account_id}
-                )
-                account = entities.aws.Account(id=account_assignment.account_id, name=account_assignment.account_id)
-            logger.warning("Found an inconsistent account assignment", extra={"account_assignment": account_assignment})
-            mention = slack_helpers.create_slack_mention_by_principal_id(
-                sso_user_id=(
-                    account_assignment.principal_id
-                    if isinstance(account_assignment, sso.AccountAssignment)
-                    else account_assignment.user_principal_id
-                ),
-                sso_client=sso_client,
-                cfg=cfg,
-                identitystore_client=identitystore_client,
-                slack_client=slack_client,
-            )
-            rule = schedule.get_event_bridge_rule(
-                event_bridge_client=events_client, rule_name=cfg.sso_elevator_scheduled_revocation_rule_name
-            )
-            next_run_time_or_expression = schedule.check_rule_expression_and_get_next_run(rule)
-            time_notice = ""
-            if isinstance(next_run_time_or_expression, datetime):
-                time_notice = f" The next scheduled revocation is set for {next_run_time_or_expression}."
-            elif isinstance(next_run_time_or_expression, str):
-                time_notice = f" The revocation schedule is set as: {next_run_time_or_expression}."  # noqa: Q000
-
-            slack_client.chat_postMessage(
-                channel=cfg.slack_channel_id,
-                text=(
-                    f"Inconsistent account assignment detected in {account.name}-{account.id} for {mention}. "
-                    f"The unidentified assignment will be automatically revoked.{time_notice}"
-                ),
-            )
-    return stale_count
+    return [a for a in account_assignments if a not in account_assignments_from_events]
 
 
-def check_on_groups_inconsistency(  # noqa: PLR0913
+def handle_check_on_inconsistency(  # noqa: PLR0913
+    sso_client: SSOAdminClient,
+    cfg: config.Config,
+    scheduler_client: EventBridgeSchedulerClient,
+    org_client: OrganizationsClient,
+    slack_client: slack_sdk.WebClient,
+    identitystore_client: IdentityStoreClient,
+    events_client: EventBridgeClient,
+) -> int:
+    """Check for inconsistent account assignments and return the count of stale grants found."""
+    orphans = _list_orphan_account_assignments(sso_client, cfg, org_client, scheduler_client)
+
+    for account_assignment in orphans:
+        try:
+            account = organizations.describe_account(org_client, account_assignment.account_id)
+        except Exception:
+            logger.warning("Failed to describe account, using account ID as fallback", extra={"account_id": account_assignment.account_id})
+            account = entities.aws.Account(id=account_assignment.account_id, name=account_assignment.account_id)
+        logger.warning("Found an inconsistent account assignment", extra={"account_assignment": account_assignment})
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=(
+                account_assignment.principal_id
+                if isinstance(account_assignment, sso.AccountAssignment)
+                else account_assignment.user_principal_id
+            ),
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identitystore_client,
+            slack_client=slack_client,
+        )
+        rule = schedule.get_event_bridge_rule(event_bridge_client=events_client, rule_name=cfg.sso_elevator_scheduled_revocation_rule_name)
+        next_run_time_or_expression = schedule.check_rule_expression_and_get_next_run(rule)
+        time_notice = ""
+        if isinstance(next_run_time_or_expression, datetime):
+            time_notice = f" Cleanup will revoke it at {next_run_time_or_expression}."
+        elif isinstance(next_run_time_or_expression, str):
+            time_notice = f" Cleanup schedule: {next_run_time_or_expression}."  # noqa: Q000
+
+        slack_client.chat_postMessage(
+            channel=cfg.slack_channel_id,
+            text=(
+                f"Untracked SSO assignment for {mention} on {account.name}-{account.id} — "
+                f"no matching Elevator revocation schedule. This usually means it was granted "
+                f"outside Elevator (Console, CLI, IaC).{time_notice}"
+            ),
+        )
+    return len(orphans)
+
+
+def _list_orphan_group_assignments(
     identity_store_client: IdentityStoreClient,
     sso_client: SSOAdminClient,
     scheduler_client: EventBridgeSchedulerClient,
-    events_client: EventBridgeClient,
     cfg: config.Config,
-    slack_client: slack_sdk.WebClient,
-) -> int:
-    """Check for inconsistent group assignments and return the count of stale grants found."""
+) -> list[sso.GroupAssignment]:
     identity_store_id = sso.get_identity_store_id(cfg, sso_client)
     scheduled_revoke_events = schedule.get_scheduled_events(scheduler_client)
     group_assignments = sso.get_group_assignments(identity_store_id, identity_store_client, cfg)
@@ -895,37 +896,45 @@ def check_on_groups_inconsistency(  # noqa: PLR0913
         for scheduled_event in scheduled_revoke_events
         if isinstance(scheduled_event, ScheduledGroupRevokeEvent)
     ]
-    stale_count = 0
-    for group_assignment in group_assignments:
-        if group_assignment not in group_assignments_from_events:
-            stale_count += 1
-            logger.warning("Group assignment is not in the scheduled events", extra={"assignment": group_assignment})
-            mention = slack_helpers.create_slack_mention_by_principal_id(
-                sso_user_id=group_assignment.user_principal_id,
-                sso_client=sso_client,
-                cfg=cfg,
-                identitystore_client=identity_store_client,
-                slack_client=slack_client,
-            )
-            rule = schedule.get_event_bridge_rule(
-                event_bridge_client=events_client, rule_name=cfg.sso_elevator_scheduled_revocation_rule_name
-            )
-            next_run_time_or_expression = schedule.check_rule_expression_and_get_next_run(rule)
-            time_notice = ""
-            if isinstance(next_run_time_or_expression, datetime):
-                time_notice = f" The next scheduled revocation is set for {next_run_time_or_expression}."
-            elif isinstance(next_run_time_or_expression, str):
-                time_notice = f" The revocation schedule is set as: {next_run_time_or_expression}."  # noqa: Q000
-            slack_client.chat_postMessage(
-                channel=cfg.slack_channel_id,
-                text=(
-                    f"""Inconsistent group assignment detected in {group_assignment.group_name}-{group_assignment.group_id} for user {
-                        mention
-                    }."""
-                    f"The unidentified assignment will be automatically revoked.{time_notice}"
-                ),
-            )
-    return stale_count
+    return [g for g in group_assignments if g not in group_assignments_from_events]
+
+
+def check_on_groups_inconsistency(  # noqa: PLR0913
+    identity_store_client: IdentityStoreClient,
+    sso_client: SSOAdminClient,
+    scheduler_client: EventBridgeSchedulerClient,
+    events_client: EventBridgeClient,
+    cfg: config.Config,
+    slack_client: slack_sdk.WebClient,
+) -> int:
+    """Check for inconsistent group assignments and return the count of stale grants found."""
+    orphans = _list_orphan_group_assignments(identity_store_client, sso_client, scheduler_client, cfg)
+
+    for group_assignment in orphans:
+        logger.warning("Group assignment is not in the scheduled events", extra={"assignment": group_assignment})
+        mention = slack_helpers.create_slack_mention_by_principal_id(
+            sso_user_id=group_assignment.user_principal_id,
+            sso_client=sso_client,
+            cfg=cfg,
+            identitystore_client=identity_store_client,
+            slack_client=slack_client,
+        )
+        rule = schedule.get_event_bridge_rule(event_bridge_client=events_client, rule_name=cfg.sso_elevator_scheduled_revocation_rule_name)
+        next_run_time_or_expression = schedule.check_rule_expression_and_get_next_run(rule)
+        time_notice = ""
+        if isinstance(next_run_time_or_expression, datetime):
+            time_notice = f" Cleanup will revoke it at {next_run_time_or_expression}."
+        elif isinstance(next_run_time_or_expression, str):
+            time_notice = f" Cleanup schedule: {next_run_time_or_expression}."  # noqa: Q000
+        slack_client.chat_postMessage(
+            channel=cfg.slack_channel_id,
+            text=(
+                f"Untracked SSO group membership for {mention} in "
+                f"{group_assignment.group_name}-{group_assignment.group_id} — no matching Elevator "
+                f"revocation schedule. This usually means it was added outside Elevator.{time_notice}"
+            ),
+        )
+    return len(orphans)
 
 
 def handle_sso_elevator_group_scheduled_revocation(  # noqa: PLR0913
