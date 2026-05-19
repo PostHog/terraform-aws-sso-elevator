@@ -30,6 +30,24 @@ from events import (
 logger = config.get_logger(service="schedule")
 cfg = config.get_config()
 
+# Revoke schedules use ActionAfterCompletion=NONE so they persist after firing until the
+# revoker explicitly deletes them post-revocation. EventBridge's previous auto-delete on
+# fire raced with the revoker's ~30-50s cold-start + SSO API latency, producing false
+# "inconsistent assignment" alerts. A schedule whose at() time is past by more than this
+# grace period is treated as stuck (Lambda timed out / OOM'd / permanently failed) and
+# excluded from matching so the inconsistency check / daily sweep can act on it.
+_FIRED_SCHEDULE_GRACE_PERIOD = timedelta(minutes=10)
+
+
+def _is_at_schedule_still_in_flight(schedule_expression: str) -> bool:
+    if not schedule_expression.startswith("at("):
+        return True
+    try:
+        at_time = datetime.fromisoformat(schedule_expression[3:-1]).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    return at_time >= datetime.now(timezone.utc) - _FIRED_SCHEDULE_GRACE_PERIOD
+
 
 def get_event_bridge_rule(event_bridge_client: EventBridgeClient, rule_name: str) -> events_type_defs.DescribeRuleResponseTypeDef:
     return event_bridge_client.describe_rule(Name=rule_name)
@@ -87,6 +105,12 @@ def get_scheduled_events(client: EventBridgeSchedulerClient) -> list[ScheduledRe
     scheduled_revoke_events: list[ScheduledRevokeEvent | ScheduledGroupRevokeEvent] = []
     for full_schedule in scheduled_events:
         if full_schedule["Name"].startswith("discard-buttons"):
+            continue
+        if not _is_at_schedule_still_in_flight(full_schedule.get("ScheduleExpression", "")):
+            logger.warning(
+                "Ignoring stuck past-due schedule",
+                extra={"schedule_name": full_schedule["Name"], "schedule_expression": full_schedule.get("ScheduleExpression")},
+            )
             continue
 
         event = json.loads(jp.search("Target.Input", full_schedule))
@@ -263,7 +287,7 @@ def schedule_revoke_event(  # noqa: PLR0913
         name_prefix=cfg.revoker_function_name,
         build_input=build_input,
         create_kwargs={
-            "ActionAfterCompletion": "DELETE",
+            "ActionAfterCompletion": "NONE",
             "FlexibleTimeWindow": {"Mode": "OFF"},
             "GroupName": cfg.schedule_group_name,
             "ScheduleExpression": event_bridge_schedule_after(permission_duration),
@@ -319,7 +343,7 @@ def schedule_group_revoke_event(  # noqa: PLR0913
         name_prefix=cfg.revoker_function_name,
         build_input=build_input,
         create_kwargs={
-            "ActionAfterCompletion": "DELETE",
+            "ActionAfterCompletion": "NONE",
             "FlexibleTimeWindow": {"Mode": "OFF"},
             "GroupName": cfg.schedule_group_name,
             "ScheduleExpression": event_bridge_schedule_after(permission_duration),
