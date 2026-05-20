@@ -13,6 +13,7 @@ from slack_sdk.models.blocks import (
     ActionsBlock,
     Block,
     ButtonElement,
+    ContextBlock,
     DividerBlock,
     InputBlock,
     MarkdownTextObject,
@@ -64,6 +65,9 @@ class RequestForAccessView:
     LOADING_BLOCK_ID = "loading"
     PERMISSION_SET_PLACEHOLDER_BLOCK_ID = "permission_set_placeholder"
     PERMISSION_SET_LOADING_BLOCK_ID = "permission_set_loading"
+
+    APPROVERS_BLOCK_ID = "approvers_preview"
+    APPROVERS_LOADING_BLOCK_ID = "approvers_preview_loading"
 
     @classmethod
     def build(cls) -> View:
@@ -175,6 +179,7 @@ class RequestForAccessView:
             if groups:
                 return InputBlock(
                     block_id=cls.PERMISSION_SET_BLOCK_ID,
+                    dispatch_action=True,
                     label=PlainTextObject(text="Permission set"),
                     element=StaticSelectElement(
                         action_id=cls.PERMISSION_SET_ACTION_ID,
@@ -186,6 +191,7 @@ class RequestForAccessView:
         sorted_permission_sets = sorted(permission_sets, key=sort_key)
         return InputBlock(
             block_id=cls.PERMISSION_SET_BLOCK_ID,
+            dispatch_action=True,
             label=PlainTextObject(text="Permission set"),
             element=StaticSelectElement(
                 action_id=cls.PERMISSION_SET_ACTION_ID,
@@ -228,6 +234,8 @@ class RequestForAccessView:
                 cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
                 cls.PERMISSION_SET_BLOCK_ID,
                 cls.PERMISSION_SET_LOADING_BLOCK_ID,
+                cls.APPROVERS_BLOCK_ID,
+                cls.APPROVERS_LOADING_BLOCK_ID,
                 "no_eligible_accounts",
             ],
         )
@@ -266,7 +274,13 @@ class RequestForAccessView:
         # Start from the current blocks, remove placeholder
         blocks = remove_blocks(
             view_blocks,
-            block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID, cls.PERMISSION_SET_LOADING_BLOCK_ID],
+            block_ids=[
+                cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+                cls.PERMISSION_SET_BLOCK_ID,
+                cls.PERMISSION_SET_LOADING_BLOCK_ID,
+                cls.APPROVERS_BLOCK_ID,
+                cls.APPROVERS_LOADING_BLOCK_ID,
+            ],
         )
         # Insert permission set dropdown after account dropdown
         blocks = insert_blocks(
@@ -279,6 +293,47 @@ class RequestForAccessView:
                 )
             ],
             after_block_id=cls.ACCOUNT_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return view
+
+    @classmethod
+    def build_approvers_preview_block(cls, text: str) -> ContextBlock:
+        return ContextBlock(
+            block_id=cls.APPROVERS_BLOCK_ID,
+            elements=[MarkdownTextObject(text=text)],
+        )
+
+    @classmethod
+    def build_approvers_loading_block(cls) -> ContextBlock:
+        return ContextBlock(
+            block_id=cls.APPROVERS_LOADING_BLOCK_ID,
+            elements=[MarkdownTextObject(text=":hourglass: Resolving approvers...")],
+        )
+
+    @classmethod
+    def show_approvers_loading(cls, view_blocks: list) -> View:
+        view = cls.build()
+        # Preview is informational only — never block submit while it's resolving.
+        view.submit_disabled = False  # type: ignore[attr-defined]
+        blocks = remove_blocks(view_blocks, block_ids=[cls.APPROVERS_BLOCK_ID, cls.APPROVERS_LOADING_BLOCK_ID])
+        blocks = insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[cls.build_approvers_loading_block()],
+            after_block_id=cls.PERMISSION_SET_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return view
+
+    @classmethod
+    def update_with_approvers(cls, view_blocks: list, text: str) -> View:
+        view = cls.build()
+        view.submit_disabled = False  # type: ignore[attr-defined]
+        blocks = remove_blocks(view_blocks, block_ids=[cls.APPROVERS_BLOCK_ID, cls.APPROVERS_LOADING_BLOCK_ID])
+        blocks = insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[cls.build_approvers_preview_block(text)],
+            after_block_id=cls.PERMISSION_SET_BLOCK_ID,
         )
         view.blocks = blocks
         return view
@@ -325,7 +380,13 @@ class RequestForAccessView:
         view.submit_disabled = True  # type: ignore[attr-defined]
         blocks = remove_blocks(
             view_blocks,
-            block_ids=[cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID, cls.PERMISSION_SET_LOADING_BLOCK_ID],
+            block_ids=[
+                cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
+                cls.PERMISSION_SET_BLOCK_ID,
+                cls.PERMISSION_SET_LOADING_BLOCK_ID,
+                cls.APPROVERS_BLOCK_ID,
+                cls.APPROVERS_LOADING_BLOCK_ID,
+            ],
         )
         blocks = insert_blocks(
             blocks=blocks,
@@ -815,6 +876,103 @@ def build_approver_group_mentions(group_ids: frozenset[str]) -> str:
     return " ".join(f"<!subteam^{group_id}>" for group_id in group_ids)
 
 
+def build_approvers_preview_text(
+    client: WebClient,
+    decisions: list,
+    email_cache: dict[str, str] | None = None,
+) -> str:
+    """Build the markdown text shown in the approver-preview ContextBlock.
+
+    Accepts one or more `access_control.AccessRequestDecision` instances and
+    unions their approvers/approver_groups for the preview. Decisions argument
+    is typed as list to avoid a circular import on access_control.
+    """
+    import access_control  # local to avoid module-level circular import
+
+    if not decisions:
+        return ":warning: No approvers configured for this request."
+
+    reasons = {d.reason for d in decisions}
+
+    if all(d.grant for d in decisions):
+        if reasons == {access_control.DecisionReason.SelfApproval}:
+            return ":white_check_mark: *You can self-approve* — request will be granted automatically."
+        return ":white_check_mark: *Auto-approved* — no approval needed."
+
+    all_emails: set[str] = set()
+    all_groups: set[str] = set()
+    for d in decisions:
+        if d.grant:
+            continue
+        all_emails.update(d.approvers)
+        all_groups.update(d.approver_groups)
+
+    if not all_emails and not all_groups:
+        return ":warning: No approvers configured for this request."
+
+    mentions, unresolved = format_approver_mentions(
+        client=client,
+        approver_emails=frozenset(all_emails),
+        approver_group_ids=frozenset(all_groups),
+        email_cache=email_cache,
+        separator=", ",
+    )
+
+    if not mentions:
+        return ":warning: No approvers configured for this request."
+
+    text = f":information_source: _This request can be approved by_ _{mentions}_"
+    if unresolved:
+        missing = ", ".join(unresolved)
+        text += f"\n_(could not match in Slack: {missing})_"
+    return text
+
+
+def format_approver_mentions(
+    client: WebClient,
+    approver_emails: frozenset[str] | set[str] | list[str],
+    approver_group_ids: frozenset[str],
+    email_cache: dict[str, str] | None = None,
+    separator: str = " ",
+) -> tuple[str, list[str]]:
+    """Format approver emails + Slack usergroup IDs into a Slack mention string.
+
+    Args:
+        client: Slack WebClient.
+        approver_emails: Approver emails to resolve to Slack users.
+        approver_group_ids: Slack usergroup IDs (formatted as <!subteam^…>).
+        email_cache: Optional dict mapping email → Slack user ID. Cached entries
+            skip the users_lookupByEmail call; new resolutions are written back.
+        separator: String inserted between mentions. Default " " for channel pings,
+            ", " for the in-modal preview.
+
+    Returns:
+        (mention_str, unresolved_emails)
+    """
+    emails = list(approver_emails)
+    user_mentions: list[str] = []
+    unresolved: list[str] = []
+
+    for email in emails:
+        cached_id = email_cache.get(email) if email_cache is not None else None
+        if cached_id:
+            user_mentions.append(f"<@{cached_id}>")
+            continue
+        try:
+            user = get_user_by_email(client, email)
+        except Exception:
+            logger.warning(f"Approver with email {email} not found in Slack")
+            unresolved.append(email)
+            continue
+        user_mentions.append(f"<@{user.id}>")
+        if email_cache is not None:
+            email_cache[email] = user.id
+
+    group_mentions = [f"<!subteam^{gid}>" for gid in approver_group_ids]
+    mention_str = separator.join(filter(None, user_mentions + group_mentions))
+    return mention_str, unresolved
+
+
 # Group
 # -----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----
 # -----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----#-----
@@ -1044,6 +1202,9 @@ class RequestForGroupAccessView:
 
     LOADING_BLOCK_ID = "loading"
 
+    APPROVERS_BLOCK_ID = "approvers_preview"
+    APPROVERS_LOADING_BLOCK_ID = "approvers_preview_loading"
+
     @classmethod
     def build(cls) -> View:  # noqa: ANN102
         return View(
@@ -1110,6 +1271,7 @@ class RequestForGroupAccessView:
         sorted_groups = sorted(groups, key=lambda groups: groups.name)
         return InputBlock(
             block_id=cls.GROUP_BLOCK_ID,
+            dispatch_action=True,
             label=PlainTextObject(text="SSO Group"),
             element=StaticSelectElement(
                 action_id=cls.GROUP_ACTION_ID,
@@ -1117,6 +1279,44 @@ class RequestForGroupAccessView:
                 options=[Option(text=PlainTextObject(text=f"{group.name}"), value=group.id) for group in sorted_groups],
             ),
         )
+
+    @classmethod
+    def build_approvers_preview_block(cls, text: str) -> ContextBlock:  # noqa: ANN102
+        return ContextBlock(
+            block_id=cls.APPROVERS_BLOCK_ID,
+            elements=[MarkdownTextObject(text=text)],
+        )
+
+    @classmethod
+    def build_approvers_loading_block(cls) -> ContextBlock:  # noqa: ANN102
+        return ContextBlock(
+            block_id=cls.APPROVERS_LOADING_BLOCK_ID,
+            elements=[MarkdownTextObject(text=":hourglass: Resolving approvers...")],
+        )
+
+    @classmethod
+    def show_approvers_loading(cls, view_blocks: list) -> View:  # noqa: ANN102
+        view = cls.build()
+        blocks = remove_blocks(view_blocks, block_ids=[cls.APPROVERS_BLOCK_ID, cls.APPROVERS_LOADING_BLOCK_ID, cls.LOADING_BLOCK_ID])
+        blocks = insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[cls.build_approvers_loading_block()],
+            after_block_id=cls.GROUP_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return view
+
+    @classmethod
+    def update_with_approvers(cls, view_blocks: list, text: str) -> View:  # noqa: ANN102
+        view = cls.build()
+        blocks = remove_blocks(view_blocks, block_ids=[cls.APPROVERS_BLOCK_ID, cls.APPROVERS_LOADING_BLOCK_ID, cls.LOADING_BLOCK_ID])
+        blocks = insert_blocks(
+            blocks=blocks,
+            blocks_to_insert=[cls.build_approvers_preview_block(text)],
+            after_block_id=cls.GROUP_BLOCK_ID,
+        )
+        view.blocks = blocks
+        return view
 
     @classmethod
     def parse(cls, obj: dict) -> RequestForGroupAccess:  # noqa: ANN102

@@ -44,6 +44,9 @@ def mock_main_imports():
     mock_cfg.denied_status = "Denied"
     mock_cfg.approver_renotification_initial_wait_time = 15
     mock_cfg.send_dm_if_user_not_in_channel = False
+    mock_cfg.max_permissions_duration_time = 8
+    mock_cfg.permission_duration_list_override = None
+    mock_cfg.permission_set_display_names = None
 
     # Patch config module before importing main
     with patch.dict(
@@ -1062,3 +1065,229 @@ class TestDenyAuthorization:
         finally:
             for p in patches:
                 p.stop()
+
+
+class TestHandlePermissionSetSelection:
+    """Tests for the new handle_permission_set_selection action handler."""
+
+    PS_ARN = "arn:aws:sso:::permissionSet/ssoins-abc/ps-123"
+    ACCOUNT_ID = "111111111111"
+    USER_ID = "U_REQUESTER"
+
+    def _ps(self):
+        return entities.aws.PermissionSet(name="Admin", arn=self.PS_ARN, description=None)
+
+    def _body(self, account_ids=None, permission_set_arn=None):
+        import slack_helpers
+
+        view_state = {}
+        if permission_set_arn is not None:
+            view_state[slack_helpers.RequestForAccessView.PERMISSION_SET_BLOCK_ID] = {
+                slack_helpers.RequestForAccessView.PERMISSION_SET_ACTION_ID: {
+                    "selected_option": {"value": permission_set_arn},
+                }
+            }
+        if account_ids is not None:
+            view_state[slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID] = {
+                slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID: {
+                    "selected_options": [{"value": a} for a in account_ids],
+                }
+            }
+        return {
+            "user": {"id": self.USER_ID},
+            "view": {
+                "id": "V_TEST",
+                "hash": "hash-1",
+                "state": {"values": view_state},
+                "blocks": [
+                    {"type": "input", "block_id": "select_account"},
+                    {"type": "input", "block_id": "select_permission_set"},
+                ],
+            },
+        }
+
+    def _mock_client_with_update(self):
+        mock_client = MagicMock()
+        update_response = MagicMock()
+        update_response.data = {"view": {"hash": "hash-2", "blocks": [{"type": "input", "block_id": "select_permission_set"}]}}
+        mock_client.views_update.return_value = update_response
+        return mock_client
+
+    def test_returns_none_when_no_permission_set_selected(self, import_main):
+        main = import_main
+        main.user_view_map.clear()
+        mock_client = self._mock_client_with_update()
+
+        result = main._handle_permission_set_selection_impl(self._body(account_ids=[self.ACCOUNT_ID]), mock_client)
+
+        assert result is None
+        mock_client.views_update.assert_not_called()
+
+    def test_returns_none_when_no_accounts_selected(self, import_main):
+        main = import_main
+        main.user_view_map.clear()
+        mock_client = self._mock_client_with_update()
+
+        result = main._handle_permission_set_selection_impl(self._body(account_ids=[], permission_set_arn=self.PS_ARN), mock_client)
+
+        assert result is None
+        mock_client.views_update.assert_not_called()
+
+    def test_returns_none_when_permission_set_arn_not_in_config(self, import_main):
+        main = import_main
+        main.user_view_map.clear()
+
+        view_key = f"{self.USER_ID}:request_for__account_access_submitted"
+        main.user_view_map[f"{view_key}:group_ids"] = set()
+        main.user_view_map[f"{view_key}:user_email"] = "requester@test.com"
+
+        mock_client = self._mock_client_with_update()
+
+        with patch.object(main.sso, "get_permission_sets_from_config_with_cache", return_value=[]):
+            result = main._handle_permission_set_selection_impl(
+                self._body(account_ids=[self.ACCOUNT_ID], permission_set_arn="arn:nonexistent"), mock_client
+            )
+
+        assert result is None
+        # Loading view was shown, but no second update
+        assert mock_client.views_update.call_count == 1
+
+    def test_happy_path_renders_approvers_text(self, import_main):
+        import access_control
+
+        main = import_main
+        main.user_view_map.clear()
+        view_key = f"{self.USER_ID}:request_for__account_access_submitted"
+        main.user_view_map[f"{view_key}:group_ids"] = set()
+        main.user_view_map[f"{view_key}:user_email"] = "requester@test.com"
+
+        mock_client = self._mock_client_with_update()
+
+        decision = access_control.AccessRequestDecision(
+            grant=False,
+            reason=access_control.DecisionReason.RequiresApproval,
+            based_on_statements=frozenset(),
+            approvers=frozenset(["alice@test.com"]),
+            approver_groups=frozenset(),
+        )
+
+        with (
+            patch.object(main.sso, "get_permission_sets_from_config_with_cache", return_value=[self._ps()]),
+            patch.object(main.access_control, "make_decision_on_access_request", return_value=decision) as mock_decision,
+            patch.object(
+                main.slack_helpers,
+                "get_user_by_email",
+                return_value=entities.slack.User(id="U_ALICE", email="alice@test.com", real_name="Alice"),
+            ),
+        ):
+            main._handle_permission_set_selection_impl(
+                self._body(account_ids=[self.ACCOUNT_ID], permission_set_arn=self.PS_ARN), mock_client
+            )
+
+        assert mock_decision.call_count == 1
+        call_kwargs = mock_decision.call_args.kwargs
+        assert call_kwargs["account_id"] == self.ACCOUNT_ID
+        assert call_kwargs["permission_set_arn"] == self.PS_ARN
+        assert call_kwargs["permission_set_name"] == "Admin"
+        assert call_kwargs["requester_email"] == "requester@test.com"
+
+        # views_update called twice: loading then preview
+        assert mock_client.views_update.call_count == 2
+        final_view = mock_client.views_update.call_args_list[-1].kwargs["view"]
+        rendered_text = self._extract_context_text(final_view, "approvers_preview")
+        assert "<@U_ALICE>" in rendered_text
+
+    def test_unions_approvers_across_multiple_accounts(self, import_main):
+        import access_control
+
+        main = import_main
+        main.user_view_map.clear()
+        view_key = f"{self.USER_ID}:request_for__account_access_submitted"
+        main.user_view_map[f"{view_key}:group_ids"] = set()
+        main.user_view_map[f"{view_key}:user_email"] = "requester@test.com"
+
+        mock_client = self._mock_client_with_update()
+
+        def decision_side_effect(*_args, **kwargs):
+            account = kwargs["account_id"]
+            approver = "alice@test.com" if account == "111" else "bob@test.com"
+            return access_control.AccessRequestDecision(
+                grant=False,
+                reason=access_control.DecisionReason.RequiresApproval,
+                based_on_statements=frozenset(),
+                approvers=frozenset([approver]),
+                approver_groups=frozenset(),
+            )
+
+        def get_user_side_effect(_client, email):
+            uid = {"alice@test.com": "U_ALICE", "bob@test.com": "U_BOB"}[email]
+            return entities.slack.User(id=uid, email=email, real_name=uid)
+
+        with (
+            patch.object(main.sso, "get_permission_sets_from_config_with_cache", return_value=[self._ps()]),
+            patch.object(main.access_control, "make_decision_on_access_request", side_effect=decision_side_effect),
+            patch.object(main.slack_helpers, "get_user_by_email", side_effect=get_user_side_effect),
+        ):
+            main._handle_permission_set_selection_impl(self._body(account_ids=["111", "222"], permission_set_arn=self.PS_ARN), mock_client)
+
+        final_view = mock_client.views_update.call_args_list[-1].kwargs["view"]
+        rendered_text = self._extract_context_text(final_view, "approvers_preview")
+        assert "<@U_ALICE>" in rendered_text
+        assert "<@U_BOB>" in rendered_text
+
+    def _extract_context_text(self, view, block_id: str) -> str:
+        for block in view.blocks:
+            bid = getattr(block, "block_id", None) or (block.get("block_id") if isinstance(block, dict) else None)
+            if bid == block_id:
+                elements = getattr(block, "elements", None) or (block.get("elements") if isinstance(block, dict) else []) or []
+                texts = []
+                for el in elements:
+                    text = getattr(el, "text", None) or (el.get("text") if isinstance(el, dict) else None)
+                    if text:
+                        texts.append(text)
+                return " ".join(texts)
+        return ""
+
+    def test_handler_swallows_exceptions_so_user_can_still_submit(self, import_main):
+        """If anything in the preview pipeline throws, the handler must log + return None
+        instead of bubbling — otherwise the user gets stuck unable to submit the modal."""
+        main = import_main
+        main.user_view_map.clear()
+
+        mock_client = self._mock_client_with_update()
+        ack = MagicMock()
+
+        # Force the impl to throw mid-flight.
+        with patch.object(main, "_handle_permission_set_selection_impl", side_effect=RuntimeError("boom")):
+            # Should NOT propagate.
+            result = main.handle_permission_set_selection(
+                ack, self._body(account_ids=[self.ACCOUNT_ID], permission_set_arn=self.PS_ARN), mock_client
+            )
+
+        assert result is None
+        ack.assert_called_once()
+
+    def test_loading_view_does_not_disable_submit(self):
+        """show_approvers_loading() must keep submit enabled — preview is informational."""
+        import slack_helpers
+
+        loading_view = slack_helpers.RequestForAccessView.show_approvers_loading(
+            [
+                {"type": "input", "block_id": "select_account"},
+                {"type": "input", "block_id": "select_permission_set"},
+            ]
+        )
+        assert getattr(loading_view, "submit_disabled", None) is False
+
+    def test_preview_view_does_not_disable_submit(self):
+        """update_with_approvers() must keep submit enabled."""
+        import slack_helpers
+
+        preview_view = slack_helpers.RequestForAccessView.update_with_approvers(
+            [
+                {"type": "input", "block_id": "select_account"},
+                {"type": "input", "block_id": "select_permission_set"},
+            ],
+            text="*hello*",
+        )
+        assert getattr(preview_view, "submit_disabled", None) is False

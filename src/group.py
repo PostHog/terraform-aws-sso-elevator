@@ -1,6 +1,8 @@
 from datetime import timedelta
 
 import boto3
+import jmespath as jp
+import slack_sdk.errors
 from mypy_boto3_identitystore import IdentityStoreClient
 from mypy_boto3_sso_admin import SSOAdminClient
 from mypy_boto3_scheduler import EventBridgeSchedulerClient
@@ -26,6 +28,87 @@ sso_client: SSOAdminClient = session.client("sso-admin")
 identity_store_client: IdentityStoreClient = session.client("identitystore")
 schedule_client: EventBridgeSchedulerClient = session.client("scheduler")
 identity_store_id = sso.get_identity_store_id(cfg, sso_client)
+
+# Per-view-session cache: email → Slack user ID. Avoids re-hitting users_lookupByEmail
+# every time the requester changes the group selection. Keyed by view_key.
+_view_email_cache: dict[str, dict[str, str]] = {}
+
+
+def handle_group_selection(ack: Ack, body: dict, client: WebClient) -> SlackResponse | None:
+    # Approver preview is informational. Any failure here MUST NOT block submission,
+    # so the entire impl is wrapped in try/except below.
+    ack()
+    try:
+        return _handle_group_selection_impl(body, client)
+    except Exception:
+        logger.exception("Approver preview rendering failed; modal remains usable")
+        return None
+
+
+def _handle_group_selection_impl(body: dict, client: WebClient) -> SlackResponse | None:
+    logger.info("Handling group selection")
+
+    view_state = jp.search("view.state.values", body) or {}
+    group_id = jp.search(
+        f"{slack_helpers.RequestForGroupAccessView.GROUP_BLOCK_ID}"
+        f".{slack_helpers.RequestForGroupAccessView.GROUP_ACTION_ID}.selected_option.value",
+        view_state,
+    )
+    if not group_id:
+        return None
+
+    view_id = body["view"]["id"]
+    view_hash = body["view"].get("hash")
+
+    def safe_views_update(view) -> SlackResponse | None:  # noqa: ANN001, ANN202
+        nonlocal view_hash
+        try:
+            response = client.views_update(view_id=view_id, view=view, hash=view_hash)
+        except slack_sdk.errors.SlackApiError as e:
+            error = e.response.get("error") if e.response else None
+            if error in {"hash_conflict", "view_expired", "not_found"}:
+                logger.info(f"Skipping stale views_update: {error}")
+                return None
+            raise
+        new_hash = response.data.get("view", {}).get("hash") if response.data else None  # type: ignore[union-attr]
+        if new_hash:
+            view_hash = new_hash
+        return response
+
+    loading_response = safe_views_update(slack_helpers.RequestForGroupAccessView.show_approvers_loading(body["view"]["blocks"]))
+    if loading_response is None:
+        return None
+    current_blocks = loading_response.data["view"]["blocks"]  # type: ignore[index]
+
+    user_id = body.get("user", {}).get("id")
+    requester = slack_helpers.get_user(client, id=user_id)
+
+    resolver_cache: dict[frozenset[str], set[str]] = {}
+
+    def approver_group_resolver(group_ids: frozenset[str]) -> set[str]:
+        if not group_ids:
+            return set()
+        if group_ids in resolver_cache:
+            return resolver_cache[group_ids]
+        group_users, _ = slack_helpers.resolve_approver_groups(client, group_ids)
+        result = {u.id for u in group_users}
+        resolver_cache[group_ids] = result
+        return result
+
+    decision = access_control.make_decision_on_access_request(
+        cfg.group_statements,
+        requester_email=requester.email,
+        group_id=group_id,
+        requester_slack_id=user_id,
+        approver_group_resolver=approver_group_resolver,
+    )
+
+    view_key = f"{user_id}:{slack_helpers.RequestForGroupAccessView.CALLBACK_ID}"
+    email_cache = _view_email_cache.setdefault(view_key, {})
+    text = slack_helpers.build_approvers_preview_text(client, [decision], email_cache)
+
+    updated_view = slack_helpers.RequestForGroupAccessView.update_with_approvers(view_blocks=current_blocks, text=text)
+    return safe_views_update(updated_view)
 
 
 @handle_errors
