@@ -11,7 +11,10 @@ from slack_helpers import (
     ButtonClickedPayload,
     ButtonGroupClickedPayload,
     RequestForAccessView,
+    RequestForGroupAccessView,
     build_approver_group_mentions,
+    build_approvers_preview_text,
+    format_approver_mentions,
     get_max_duration_block,
     get_usergroup_members,
     resolve_approver_groups,
@@ -526,6 +529,275 @@ class TestBuildApproverGroupMentions:
         """Empty frozenset returns empty string."""
         result = build_approver_group_mentions(frozenset())
         assert result == ""
+
+
+class TestFormatApproverMentions:
+    """Tests for format_approver_mentions function."""
+
+    def _client_with_emails(self, email_to_id: dict[str, str]) -> MagicMock:
+        client = MagicMock()
+
+        def lookup(email):
+            uid = email_to_id.get(email)
+            if uid is None:
+                raise slack_sdk.errors.SlackApiError(message="users_not_found", response=MagicMock())
+            response = MagicMock()
+            response.data = {"user": {"id": uid, "profile": {"email": email}, "real_name": uid}}
+            return response
+
+        client.users_lookupByEmail.side_effect = lookup
+        return client
+
+    def test_resolves_users_and_groups(self):
+        client = self._client_with_emails({"a@test.com": "U_A", "b@test.com": "U_B"})
+        mention_str, unresolved = format_approver_mentions(
+            client=client,
+            approver_emails=frozenset(["a@test.com", "b@test.com"]),
+            approver_group_ids=frozenset(["GRP1"]),
+            separator=", ",
+        )
+        assert "<@U_A>" in mention_str
+        assert "<@U_B>" in mention_str
+        assert "<!subteam^GRP1>" in mention_str
+        assert ", " in mention_str
+        assert unresolved == []
+
+    def test_tracks_unresolved_emails(self):
+        client = self._client_with_emails({"a@test.com": "U_A"})
+        mention_str, unresolved = format_approver_mentions(
+            client=client,
+            approver_emails=frozenset(["a@test.com", "missing@test.com"]),
+            approver_group_ids=frozenset(),
+            separator=", ",
+        )
+        assert "<@U_A>" in mention_str
+        assert "missing@test.com" not in mention_str
+        assert unresolved == ["missing@test.com"]
+
+    def test_uses_email_cache_to_skip_lookup(self):
+        client = self._client_with_emails({"a@test.com": "U_A"})
+        cache = {"a@test.com": "U_CACHED"}
+        mention_str, _ = format_approver_mentions(
+            client=client,
+            approver_emails=frozenset(["a@test.com"]),
+            approver_group_ids=frozenset(),
+            email_cache=cache,
+        )
+        assert "<@U_CACHED>" in mention_str
+        client.users_lookupByEmail.assert_not_called()
+
+    def test_writes_back_to_email_cache(self):
+        client = self._client_with_emails({"a@test.com": "U_A"})
+        cache: dict[str, str] = {}
+        format_approver_mentions(
+            client=client,
+            approver_emails=frozenset(["a@test.com"]),
+            approver_group_ids=frozenset(),
+            email_cache=cache,
+        )
+        assert cache == {"a@test.com": "U_A"}
+
+
+class TestBuildApproversPreviewText:
+    """Tests for build_approvers_preview_text — drives the modal preview block."""
+
+    def _make_decision(
+        self,
+        reason_name: str,
+        grant: bool,
+        approvers: frozenset[str] = frozenset(),
+        approver_groups: frozenset[str] = frozenset(),
+    ):
+        import access_control
+
+        return access_control.AccessRequestDecision(
+            grant=grant,
+            reason=getattr(access_control.DecisionReason, reason_name),
+            based_on_statements=frozenset(),
+            approvers=approvers,
+            approver_groups=approver_groups,
+        )
+
+    def _client_with_emails(self, email_to_id: dict[str, str]) -> MagicMock:
+        client = MagicMock()
+
+        def lookup(email):
+            uid = email_to_id.get(email)
+            if uid is None:
+                raise slack_sdk.errors.SlackApiError(message="users_not_found", response=MagicMock())
+            response = MagicMock()
+            response.data = {"user": {"id": uid, "profile": {"email": email}, "real_name": uid}}
+            return response
+
+        client.users_lookupByEmail.side_effect = lookup
+        return client
+
+    def test_empty_decisions_returns_no_approvers_warning(self):
+        text = build_approvers_preview_text(MagicMock(), [])
+        assert ":warning:" in text
+        assert "No approvers" in text
+
+    def test_all_approval_not_required_is_auto_approved(self):
+        decision = self._make_decision("ApprovalNotRequired", grant=True)
+        text = build_approvers_preview_text(MagicMock(), [decision])
+        assert ":white_check_mark:" in text
+        assert "Auto-approved" in text
+
+    def test_all_self_approval_returns_self_approve_text(self):
+        decision = self._make_decision("SelfApproval", grant=True)
+        text = build_approvers_preview_text(MagicMock(), [decision])
+        assert ":white_check_mark:" in text
+        assert "self-approve" in text
+
+    def test_no_statements_returns_no_approvers_warning(self):
+        decision = self._make_decision("NoStatements", grant=False)
+        text = build_approvers_preview_text(MagicMock(), [decision])
+        assert ":warning:" in text
+        assert "No approvers" in text
+
+    def test_no_approvers_reason_returns_warning(self):
+        decision = self._make_decision("NoApprovers", grant=False)
+        text = build_approvers_preview_text(MagicMock(), [decision])
+        assert ":warning:" in text
+
+    def test_requires_approval_renders_mentions(self):
+        client = self._client_with_emails({"alice@test.com": "U_ALICE", "bob@test.com": "U_BOB"})
+        decision = self._make_decision(
+            "RequiresApproval",
+            grant=False,
+            approvers=frozenset(["alice@test.com", "bob@test.com"]),
+            approver_groups=frozenset(["GRP_SEC"]),
+        )
+        text = build_approvers_preview_text(client, [decision])
+        assert ":information_source:" in text
+        assert "<@U_ALICE>" in text
+        assert "<@U_BOB>" in text
+        assert "<!subteam^GRP_SEC>" in text
+
+    def test_requires_approval_appends_unresolved_note(self):
+        client = self._client_with_emails({"alice@test.com": "U_ALICE"})
+        decision = self._make_decision(
+            "RequiresApproval",
+            grant=False,
+            approvers=frozenset(["alice@test.com", "missing@test.com"]),
+        )
+        text = build_approvers_preview_text(client, [decision])
+        assert "<@U_ALICE>" in text
+        assert "could not match in Slack" in text
+        assert "missing@test.com" in text
+
+    def test_union_across_multiple_account_decisions(self):
+        """Multi-account selection — preview text unions approvers from each account's decision."""
+        client = self._client_with_emails(
+            {
+                "alice@test.com": "U_ALICE",
+                "bob@test.com": "U_BOB",
+                "carol@test.com": "U_CAROL",
+            }
+        )
+        decision_a = self._make_decision(
+            "RequiresApproval",
+            grant=False,
+            approvers=frozenset(["alice@test.com", "bob@test.com"]),
+        )
+        decision_b = self._make_decision(
+            "RequiresApproval",
+            grant=False,
+            approvers=frozenset(["bob@test.com", "carol@test.com"]),
+            approver_groups=frozenset(["GRP_SEC"]),
+        )
+        text = build_approvers_preview_text(client, [decision_a, decision_b])
+        assert "<@U_ALICE>" in text
+        assert "<@U_BOB>" in text
+        assert "<@U_CAROL>" in text
+        assert "<!subteam^GRP_SEC>" in text
+
+    def test_mixed_grant_and_requires_approval_falls_through_to_approvers(self):
+        """If one account auto-approves and another requires approval, preview shows approvers (not auto-approve text)."""
+        client = self._client_with_emails({"alice@test.com": "U_ALICE"})
+        decision_auto = self._make_decision("ApprovalNotRequired", grant=True)
+        decision_req = self._make_decision(
+            "RequiresApproval",
+            grant=False,
+            approvers=frozenset(["alice@test.com"]),
+        )
+        text = build_approvers_preview_text(client, [decision_auto, decision_req])
+        assert ":information_source:" in text
+        assert "<@U_ALICE>" in text
+
+
+class TestApprovalRequestViewPreviewBlocks:
+    """Tests for the new preview-block classmethods on RequestForAccessView."""
+
+    def test_show_approvers_loading_inserts_loading_after_permission_set(self):
+        permission_set = PermissionSet(name="Admin", arn="arn:aws:sso:::permissionSet/ssoins-abc/ps-123", description=None)
+        view = RequestForAccessView.update_with_permission_sets(
+            view_blocks=[
+                {"type": "input", "block_id": RequestForAccessView.ACCOUNT_BLOCK_ID},
+                {"type": "input", "block_id": RequestForAccessView.PERMISSION_SET_PLACEHOLDER_BLOCK_ID},
+            ],
+            permission_sets=[permission_set],
+        )
+        view_with_loading = RequestForAccessView.show_approvers_loading(view.blocks)
+        block_ids = [getattr(b, "block_id", None) or (b.get("block_id") if isinstance(b, dict) else None) for b in view_with_loading.blocks]
+        assert RequestForAccessView.APPROVERS_LOADING_BLOCK_ID in block_ids
+        # loading block should come after permission set block
+        assert block_ids.index(RequestForAccessView.APPROVERS_LOADING_BLOCK_ID) > block_ids.index(
+            RequestForAccessView.PERMISSION_SET_BLOCK_ID
+        )
+
+    def test_update_with_approvers_replaces_loading_block(self):
+        permission_set = PermissionSet(name="Admin", arn="arn:aws:sso:::permissionSet/ssoins-abc/ps-123", description=None)
+        view = RequestForAccessView.update_with_permission_sets(
+            view_blocks=[
+                {"type": "input", "block_id": RequestForAccessView.ACCOUNT_BLOCK_ID},
+                {"type": "input", "block_id": RequestForAccessView.PERMISSION_SET_PLACEHOLDER_BLOCK_ID},
+            ],
+            permission_sets=[permission_set],
+        )
+        view_with_loading = RequestForAccessView.show_approvers_loading(view.blocks)
+        view_with_approvers = RequestForAccessView.update_with_approvers(view_with_loading.blocks, "*hello*")
+        block_ids = [
+            getattr(b, "block_id", None) or (b.get("block_id") if isinstance(b, dict) else None) for b in view_with_approvers.blocks
+        ]
+        assert RequestForAccessView.APPROVERS_BLOCK_ID in block_ids
+        assert RequestForAccessView.APPROVERS_LOADING_BLOCK_ID not in block_ids
+
+    def test_update_with_permission_sets_strips_stale_approver_preview(self):
+        """Changing the account selection should clear an existing approver preview."""
+        permission_set = PermissionSet(name="Admin", arn="arn:aws:sso:::permissionSet/ssoins-abc/ps-123", description=None)
+        # Start with a view that has an existing approver preview block
+        view = RequestForAccessView.update_with_permission_sets(
+            view_blocks=[
+                {"type": "input", "block_id": RequestForAccessView.ACCOUNT_BLOCK_ID},
+                {"type": "input", "block_id": RequestForAccessView.PERMISSION_SET_PLACEHOLDER_BLOCK_ID},
+            ],
+            permission_sets=[permission_set],
+        )
+        view_with_preview = RequestForAccessView.update_with_approvers(view.blocks, "*old preview*")
+        # Now simulate updating permission sets again (new account selected)
+        view_after = RequestForAccessView.update_with_permission_sets(
+            view_blocks=view_with_preview.blocks,
+            permission_sets=[permission_set],
+        )
+        block_ids = [getattr(b, "block_id", None) or (b.get("block_id") if isinstance(b, dict) else None) for b in view_after.blocks]
+        assert RequestForAccessView.APPROVERS_BLOCK_ID not in block_ids
+
+
+class TestGroupAccessViewPreviewBlocks:
+    """Tests for the new preview-block classmethods on RequestForGroupAccessView."""
+
+    def test_show_approvers_loading_inserts_after_group(self):
+        view = RequestForGroupAccessView.show_approvers_loading([{"type": "input", "block_id": RequestForGroupAccessView.GROUP_BLOCK_ID}])
+        block_ids = [getattr(b, "block_id", None) or (b.get("block_id") if isinstance(b, dict) else None) for b in view.blocks]
+        assert RequestForGroupAccessView.APPROVERS_LOADING_BLOCK_ID in block_ids
+
+    def test_update_with_approvers_replaces_loading(self):
+        view = RequestForGroupAccessView.show_approvers_loading([{"type": "input", "block_id": RequestForGroupAccessView.GROUP_BLOCK_ID}])
+        updated = RequestForGroupAccessView.update_with_approvers(view.blocks, "*hello*")
+        block_ids = [getattr(b, "block_id", None) or (b.get("block_id") if isinstance(b, dict) else None) for b in updated.blocks]
+        assert RequestForGroupAccessView.APPROVERS_BLOCK_ID in block_ids
+        assert RequestForGroupAccessView.APPROVERS_LOADING_BLOCK_ID not in block_ids
 
 
 class TestParseMulti:

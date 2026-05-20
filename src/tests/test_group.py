@@ -34,6 +34,8 @@ def mock_group_imports():
     mock_cfg.denied_status = "Denied"
     mock_cfg.approver_renotification_initial_wait_time = 15
     mock_cfg.send_dm_if_user_not_in_channel = False
+    mock_cfg.max_permissions_duration_time = 8
+    mock_cfg.permission_duration_list_override = None
 
     with patch.dict(sys.modules, {"boto3": MagicMock(_get_default_session=lambda: mock_session)}):
         with patch("config.get_config", return_value=mock_cfg):
@@ -338,3 +340,111 @@ class TestDenyAuthorizationGroup:
         finally:
             for p in patches:
                 p.stop()
+
+
+class TestHandleGroupSelection:
+    """Tests for the new handle_group_selection action handler."""
+
+    GROUP_ID = "g-abc-123"
+    USER_ID = "U_REQUESTER"
+
+    def _body(self, group_id=None):
+        import slack_helpers
+
+        view_state = {}
+        if group_id is not None:
+            view_state[slack_helpers.RequestForGroupAccessView.GROUP_BLOCK_ID] = {
+                slack_helpers.RequestForGroupAccessView.GROUP_ACTION_ID: {
+                    "selected_option": {"value": group_id},
+                }
+            }
+        return {
+            "user": {"id": self.USER_ID},
+            "view": {
+                "id": "V_TEST",
+                "hash": "hash-1",
+                "state": {"values": view_state},
+                "blocks": [{"type": "input", "block_id": "select_group"}],
+            },
+        }
+
+    def _mock_client(self):
+        mock_client = MagicMock()
+        update_response = MagicMock()
+        update_response.data = {"view": {"hash": "hash-2", "blocks": [{"type": "input", "block_id": "select_group"}]}}
+        mock_client.views_update.return_value = update_response
+        return mock_client
+
+    def test_returns_none_when_no_group_selected(self, import_group):
+        group = import_group
+        mock_client = self._mock_client()
+        ack = MagicMock()
+
+        result = group.handle_group_selection(ack, self._body(), mock_client)
+
+        assert result is None
+        ack.assert_called_once()
+        mock_client.views_update.assert_not_called()
+
+    def test_happy_path_renders_approvers(self, import_group):
+        import access_control
+
+        group = import_group
+        mock_client = self._mock_client()
+        ack = MagicMock()
+
+        decision = access_control.AccessRequestDecision(
+            grant=False,
+            reason=access_control.DecisionReason.RequiresApproval,
+            based_on_statements=frozenset(),
+            approvers=frozenset(["alice@test.com"]),
+            approver_groups=frozenset(),
+        )
+
+        with (
+            patch.object(
+                group.slack_helpers,
+                "get_user",
+                return_value=entities.slack.User(id=self.USER_ID, email="requester@test.com", real_name="Requester"),
+            ),
+            patch.object(group.access_control, "make_decision_on_access_request", return_value=decision) as mock_decision,
+            patch.object(
+                group.slack_helpers,
+                "get_user_by_email",
+                return_value=entities.slack.User(id="U_ALICE", email="alice@test.com", real_name="Alice"),
+            ),
+        ):
+            group.handle_group_selection(ack, self._body(group_id=self.GROUP_ID), mock_client)
+
+        assert mock_decision.call_count == 1
+        assert mock_decision.call_args.kwargs["group_id"] == self.GROUP_ID
+        # views_update called twice: loading then preview
+        assert mock_client.views_update.call_count == 2
+        final_view = mock_client.views_update.call_args_list[-1].kwargs["view"]
+        rendered = self._extract_context_text(final_view, "approvers_preview")
+        assert "<@U_ALICE>" in rendered
+
+    def test_handler_swallows_exceptions_so_user_can_still_submit(self, import_group):
+        """If anything in the preview pipeline throws, the handler must log + return None."""
+        group = import_group
+        mock_client = self._mock_client()
+        ack = MagicMock()
+
+        with patch.object(group, "_handle_group_selection_impl", side_effect=RuntimeError("boom")):
+            result = group.handle_group_selection(ack, self._body(group_id=self.GROUP_ID), mock_client)
+
+        assert result is None
+        ack.assert_called_once()
+
+    def _extract_context_text(self, view, block_id: str) -> str:
+        for block in view.blocks:
+            bid = getattr(block, "block_id", None) or (block.get("block_id") if isinstance(block, dict) else None)
+            if bid == block_id:
+                elements = getattr(block, "elements", None) or (block.get("elements") if isinstance(block, dict) else []) or []
+                texts = []
+                for el in elements:
+                    text = getattr(el, "text", None) or (el.get("text") if isinstance(el, dict) else None)
+                    if text:
+                        texts.append(text)
+                return " ".join(texts)
+        return ""

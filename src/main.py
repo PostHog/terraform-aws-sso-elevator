@@ -745,6 +745,8 @@ app.view(slack_helpers.RequestForGroupAccessView.CALLBACK_ID)(
     lazy=[group.handle_request_for_group_access_submittion],
 )
 
+app.action(slack_helpers.RequestForGroupAccessView.GROUP_ACTION_ID)(group.handle_group_selection)
+
 
 @app.action("duration_picker_action")
 def handle_duration_picker_action(ack):  # noqa: ANN201, ANN001
@@ -912,6 +914,110 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
         display_names=cfg.permission_set_display_names,
         auto_approved_arns=auto_approved_arns,
     )
+    return safe_views_update(updated_view)
+
+
+def handle_permission_set_selection(ack: Ack, body: dict, client: WebClient) -> SlackResponse | None:
+    # The approver preview is informational. Any failure here MUST NOT block the user from
+    # submitting their request, so the entire impl is wrapped in try/except below.
+    ack()
+    try:
+        return _handle_permission_set_selection_impl(body, client)
+    except Exception:
+        logger.exception("Approver preview rendering failed; modal remains usable")
+        return None
+
+
+app.action(slack_helpers.RequestForAccessView.PERMISSION_SET_ACTION_ID)(handle_permission_set_selection)
+
+
+def _handle_permission_set_selection_impl(body: dict, client: WebClient) -> SlackResponse | None:
+    logger.info("Handling permission set selection")
+
+    view_state = jp.search("view.state.values", body) or {}
+    permission_set_arn = jp.search(
+        f"{slack_helpers.RequestForAccessView.PERMISSION_SET_BLOCK_ID}"
+        f".{slack_helpers.RequestForAccessView.PERMISSION_SET_ACTION_ID}.selected_option.value",
+        view_state,
+    )
+    if not permission_set_arn:
+        return None
+
+    selected_options = (
+        jp.search(
+            f"{slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID}"
+            f".{slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID}.selected_options",
+            view_state,
+        )
+        or []
+    )
+    account_ids = [opt["value"] for opt in selected_options]
+    if not account_ids:
+        return None
+
+    view_id = body["view"]["id"]
+    view_hash = body["view"].get("hash")
+
+    def safe_views_update(view) -> SlackResponse | None:  # noqa: ANN001, ANN202
+        nonlocal view_hash
+        try:
+            response = client.views_update(view_id=view_id, view=view, hash=view_hash)
+        except slack_sdk.errors.SlackApiError as e:
+            error = e.response.get("error") if e.response else None
+            if error in {"hash_conflict", "view_expired", "not_found"}:
+                logger.info(f"Skipping stale views_update: {error}")
+                return None
+            raise
+        new_hash = response.data.get("view", {}).get("hash") if response.data else None  # type: ignore[union-attr]
+        if new_hash:
+            view_hash = new_hash
+        return response
+
+    loading_response = safe_views_update(slack_helpers.RequestForAccessView.show_approvers_loading(body["view"]["blocks"]))
+    if loading_response is None:
+        return None
+    current_blocks = loading_response.data["view"]["blocks"]  # type: ignore[index]
+
+    user_id = body.get("user", {}).get("id")
+    callback_id = slack_helpers.RequestForAccessView.CALLBACK_ID
+    view_key = f"{user_id}:{callback_id}"
+    user_group_ids, user_email = _get_cached_user_info(view_key, user_id, client)
+
+    all_ps = sso.get_permission_sets_from_config_with_cache(sso_client=sso_client, s3_client=s3_client, cfg=cfg)
+    ps = next((p for p in all_ps if p.arn == permission_set_arn), None)
+    if ps is None:
+        logger.warning(f"Permission set ARN not found in config: {permission_set_arn}")
+        return None
+
+    resolver_cache: dict[frozenset[str], set[str]] = {}
+
+    def approver_group_resolver(group_ids: frozenset[str]) -> set[str]:
+        if not group_ids:
+            return set()
+        if group_ids in resolver_cache:
+            return resolver_cache[group_ids]
+        group_users, _ = slack_helpers.resolve_approver_groups(client, group_ids)
+        result = {u.id for u in group_users}
+        resolver_cache[group_ids] = result
+        return result
+
+    decisions = [
+        access_control.make_decision_on_access_request(
+            cfg.statements,
+            account_id=aid,
+            permission_set_name=ps.name,
+            permission_set_arn=ps.arn,
+            requester_email=user_email or "",
+            user_group_ids=user_group_ids,
+            requester_slack_id=user_id,
+            approver_group_resolver=approver_group_resolver,
+        )
+        for aid in account_ids
+    ]
+
+    email_cache = user_view_map.setdefault(f"{view_key}:approver_email_to_slack", {})
+    text = slack_helpers.build_approvers_preview_text(client, decisions, email_cache)
+    updated_view = slack_helpers.RequestForAccessView.update_with_approvers(view_blocks=current_blocks, text=text)
     return safe_views_update(updated_view)
 
 
