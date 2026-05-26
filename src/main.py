@@ -20,6 +20,7 @@ import schedule
 import slack_helpers
 import sso
 import statement
+import errors
 from errors import AccountAssignmentError, SSOUserNotFound, handle_errors
 
 logger = config.get_logger(service="main")
@@ -1182,7 +1183,7 @@ app.action(entities.ApproverAction.EarlyRevoke.value)(
 
 
 @handle_errors
-def handle_extend_grant_button_click(body: dict, client: WebClient, context: BoltContext) -> SlackResponse | None:  # noqa: ARG001, PLR0915
+def handle_extend_grant_button_click(body: dict, client: WebClient, context: BoltContext) -> SlackResponse | None:  # noqa: ARG001, PLR0911, PLR0915
     """Handle the 'Extend access' button click."""
     import json
     from datetime import datetime, timedelta, timezone
@@ -1242,7 +1243,16 @@ def handle_extend_grant_button_click(body: dict, client: WebClient, context: Bol
             user_principal_id=payload.user_principal_id,
         )
 
-        sso.create_account_assignment_and_wait_for_result(sso_client, account_assignment)
+        try:
+            sso.create_account_assignment_and_wait_for_result(sso_client, account_assignment)
+        except Exception as e:
+            if errors.is_conflict_exception(e):
+                logger.warning(
+                    "Concurrent extend already in progress, skipping follow-up",
+                    extra={"account_assignment": account_assignment},
+                )
+                return None
+            raise
 
         _, schedule_name = schedule.schedule_revoke_event(
             permission_duration=extension_duration,
@@ -1290,7 +1300,18 @@ def handle_extend_grant_button_click(body: dict, client: WebClient, context: Bol
     elif payload.group_id:
         # Group access extension
         identity_store_id = payload.identity_store_id or sso.get_identity_store_id(cfg, sso_client)
-        membership_result = sso.add_user_to_a_group(payload.group_id, payload.user_principal_id, identity_store_id, identity_store_client)
+        try:
+            membership_result = sso.add_user_to_a_group(
+                payload.group_id, payload.user_principal_id, identity_store_id, identity_store_client
+            )
+        except Exception as e:
+            if errors.is_conflict_exception(e):
+                logger.warning(
+                    "Concurrent group extend already in progress, skipping follow-up",
+                    extra={"group_id": payload.group_id, "user_principal_id": payload.user_principal_id},
+                )
+                return None
+            raise
         membership_id = membership_result["MembershipId"]
 
         group_assignment = sso.GroupAssignment(

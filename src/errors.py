@@ -1,6 +1,7 @@
 import functools
 import inspect
 
+import botocore.exceptions
 from aws_lambda_powertools import Logger
 from slack_bolt import BoltContext
 from slack_sdk import WebClient
@@ -28,6 +29,19 @@ logger = config.get_logger(service="errors")
 cfg = config.get_config()
 
 
+def is_conflict_exception(e: BaseException) -> bool:
+    """True if `e` is an AWS SSO/Identity Store ConflictException — i.e., another operation on
+    the same target is in progress. Treat these as benign across the codebase: the other
+    operation will either succeed or surface its own failure."""
+    return isinstance(e, botocore.exceptions.ClientError) and e.response.get("Error", {}).get("Code") == "ConflictException"
+
+
+def is_resource_not_found_exception(e: BaseException) -> bool:
+    """True if `e` is an AWS SSO/Identity Store ResourceNotFoundException — i.e., the target
+    object already doesn't exist."""
+    return isinstance(e, botocore.exceptions.ClientError) and e.response.get("Error", {}).get("Code") == "ResourceNotFoundException"
+
+
 def error_handler(client: WebClient, e: Exception, logger: Logger, context: BoltContext, cfg: config.Config) -> None:
     logger.exception("An error occurred:", exc_info=e)
     user_id = context.get("user_id", "UNKNOWN_USER")
@@ -48,7 +62,9 @@ def error_handler(client: WebClient, e: Exception, logger: Logger, context: Bolt
             "Please check the SSO Elevator logs for more details."
         )
     else:
-        text = f"<@{user_id}> Your request for AWS permissions encountered an unexpected error. Refer to the logs for more details."
+        # The tagged user is whoever triggered the action (requester on submission, approver on
+        # button click), so the message stays role-neutral instead of assuming "your request".
+        text = f"<@{user_id}> Something went wrong handling this action. Check the SSO Elevator logs for details."
     client.chat_postMessage(text=text, channel=cfg.slack_channel_id)
 
 
