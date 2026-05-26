@@ -186,10 +186,7 @@ def handle_early_account_revocation(  # noqa: PLR0913
         assignment_status = None
         already_revoked = True
     except Exception as e:
-        import jmespath as jp
-
-        error_code = jp.search("Error.Code", getattr(e, "response", {})) if hasattr(e, "response") else None
-        if error_code == "ConflictException":
+        if errors.is_conflict_exception(e):
             # Another invocation (Slack retry or scheduled revoker) is already deleting this
             # assignment. Let that handler finish the follow-up work (delete schedule, audit
             # log, Slack update) — doing it here would duplicate those side effects.
@@ -340,6 +337,7 @@ def handle_early_group_revocation(  # noqa: PLR0913
     logger.info("Handling early group revocation", extra={"schedule_name": schedule_name})
 
     # 1. Remove user from group first
+    already_revoked = False
     try:
         sso.remove_user_from_group(
             group_assignment.identity_store_id,
@@ -347,8 +345,18 @@ def handle_early_group_revocation(  # noqa: PLR0913
             identitystore_client,
         )
     except Exception as e:
-        logger.error("Failed to remove user from group during early revocation", extra={"error": str(e)})
-        raise
+        if errors.is_resource_not_found_exception(e):
+            logger.info("Group membership already deleted, treating as already revoked", extra={"schedule_name": schedule_name})
+            already_revoked = True
+        elif errors.is_conflict_exception(e):
+            logger.warning(
+                "Concurrent group revocation already in progress, skipping",
+                extra={"schedule_name": schedule_name},
+            )
+            return None
+        else:
+            logger.error("Failed to remove user from group during early revocation", extra={"error": str(e)})
+            raise
 
     # 2. Delete the scheduled revocation
     schedule.delete_schedule(scheduler_client, schedule_name)
@@ -398,7 +406,10 @@ def handle_early_group_revocation(  # noqa: PLR0913
             )
 
         reason_text = f" Reason: {reason}" if reason else ""
-        text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
+        if already_revoked:
+            text = f"<@{revoker_slack_id}> ended the session early (access was already revoked).{reason_text}"
+        else:
+            text = f"<@{revoker_slack_id}> ended the session early.{reason_text}"
         slack_helpers.delete_early_revoke_button(slack_client, cfg.slack_channel_id, thread_ts)
         return slack_client.chat_postMessage(
             channel=cfg.slack_channel_id,
@@ -613,13 +624,7 @@ def handle_scheduled_account_assignment_deletion(  # noqa: PLR0913
             user_account_assignment,
         )
     except Exception as e:
-        error_code = None
-        # Check for botocore ClientError
-        if hasattr(e, "response"):
-            import jmespath as jp
-
-            error_code = jp.search("Error.Code", getattr(e, "response", {}))
-        if error_code == "ConflictException":
+        if errors.is_conflict_exception(e):
             logger.warning(
                 "Account assignment already deleted (likely by early revoke), skipping",
                 extra={"revoke_event": revoke_event},
@@ -738,17 +743,20 @@ def handle_scheduled_group_assignment_deletion(  # noqa: PLR0913
     try:
         sso.remove_user_from_group(group_assignment.identity_store_id, group_assignment.membership_id, identitystore_client)
     except Exception as e:
-        error_code = None
-        if hasattr(e, "response"):
-            import jmespath as jp
-
-            error_code = jp.search("Error.Code", getattr(e, "response", {}))
-        if error_code == "ResourceNotFoundException":
+        if errors.is_resource_not_found_exception(e):
             logger.warning(
                 "Group membership already deleted (likely by early revoke), skipping",
                 extra={"group_revoke_event": group_revoke_event},
             )
             schedule.delete_schedule(scheduler_client, group_revoke_event.schedule_name)
+            return None
+        if errors.is_conflict_exception(e):
+            # Another invocation is already deleting this membership; let it finish the
+            # follow-up work (delete schedule, audit log, Slack update).
+            logger.warning(
+                "Concurrent group revocation already in progress, skipping",
+                extra={"group_revoke_event": group_revoke_event},
+            )
             return None
         raise
 
@@ -966,7 +974,26 @@ def handle_sso_elevator_group_scheduled_revocation(  # noqa: PLR0913
             )
             continue
         else:
-            sso.remove_user_from_group(group_assignment.identity_store_id, group_assignment.membership_id, identitystore_client)
+            try:
+                sso.remove_user_from_group(group_assignment.identity_store_id, group_assignment.membership_id, identitystore_client)
+            except Exception as e:
+                if errors.is_conflict_exception(e):
+                    logger.warning(
+                        "Concurrent group revocation already in progress, skipping in scheduled sweep",
+                        extra={"group_assignment": group_assignment},
+                    )
+                    continue
+                if errors.is_resource_not_found_exception(e):
+                    logger.info(
+                        "Group membership already gone, skipping in scheduled sweep",
+                        extra={"group_assignment": group_assignment},
+                    )
+                    continue
+                logger.exception(
+                    "Failed to remove group membership during scheduled sweep, continuing with next",
+                    extra={"group_assignment": group_assignment},
+                )
+                continue
             s3.log_operation(
                 audit_entry=s3.AuditEntry(
                     group_name=group_assignment.group_name,
@@ -1020,19 +1047,34 @@ def handle_sso_elevator_scheduled_revocation(  # noqa: PLR0913
             )
             continue
         else:
-            handle_account_assignment_deletion(
-                account_assignment=sso.UserAccountAssignment(
-                    account_id=account_assignment.account_id,
-                    permission_set_arn=account_assignment.permission_set_arn,
-                    user_principal_id=account_assignment.principal_id,
-                    instance_arn=cfg.sso_instance_arn,
-                ),
-                sso_client=sso_client,
-                org_client=org_client,
-                slack_client=slack_client,
-                identitystore_client=identitystore_client,
-                cfg=cfg,
-            )
+            try:
+                handle_account_assignment_deletion(
+                    account_assignment=sso.UserAccountAssignment(
+                        account_id=account_assignment.account_id,
+                        permission_set_arn=account_assignment.permission_set_arn,
+                        user_principal_id=account_assignment.principal_id,
+                        instance_arn=cfg.sso_instance_arn,
+                    ),
+                    sso_client=sso_client,
+                    org_client=org_client,
+                    slack_client=slack_client,
+                    identitystore_client=identitystore_client,
+                    cfg=cfg,
+                )
+            except Exception as e:
+                # Don't let one bad assignment abort the rest of the sweep — the next
+                # scheduled run will retry. Most likely a concurrent revoker is already
+                # processing this assignment.
+                if errors.is_conflict_exception(e):
+                    logger.warning(
+                        "Concurrent revocation already in progress, skipping in scheduled sweep",
+                        extra={"account_assignment": account_assignment},
+                    )
+                    continue
+                logger.exception(
+                    "Failed to revoke assignment during scheduled sweep, continuing with next",
+                    extra={"account_assignment": account_assignment},
+                )
 
 
 def handle_discard_buttons_event(

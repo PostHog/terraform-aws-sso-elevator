@@ -3,11 +3,11 @@ from enum import Enum
 from typing import Callable, FrozenSet
 
 import boto3
-import botocore.exceptions
 import slack_sdk
 
 import config
 import entities
+import errors
 import event_publisher
 import organizations
 import s3
@@ -193,10 +193,6 @@ class ExecuteDecisionResult(BaseModel):
     can_extend_expired_grant: bool = False
 
 
-def _is_conflict_exception(e: Exception) -> bool:
-    return isinstance(e, botocore.exceptions.ClientError) and e.response.get("Error", {}).get("Code") == "ConflictException"
-
-
 def make_decision_on_approve_request(  # noqa: PLR0913
     action: entities.ApproverAction,
     statements: frozenset[Statement],
@@ -289,7 +285,7 @@ def execute_decision(  # noqa: PLR0913
             account_assignment,
         )
     except Exception as e:
-        if _is_conflict_exception(e):
+        if errors.is_conflict_exception(e):
             # Another invocation (typically a second approver clicking concurrently, or a
             # Slack webhook retry) is already creating this assignment. Skip the audit /
             # schedule / Slack side effects — the winning invocation will produce them.
@@ -449,7 +445,7 @@ def execute_decision_on_group_request(  # noqa: PLR0913
                 "MembershipId"
             ]
         except Exception as e:
-            if _is_conflict_exception(e):
+            if errors.is_conflict_exception(e):
                 logger.warning(
                     "Concurrent group-membership creation already in progress, skipping follow-up",
                     extra={"group_id": group.id, "user_id": sso_user_principal_id},
