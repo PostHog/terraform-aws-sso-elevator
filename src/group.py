@@ -253,6 +253,10 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
         thread_ts=slack_response["ts"],
     )
 
+    if result.concurrent_operation:
+        logger.info("Skipping follow-up — concurrent group request already in progress")
+        return None  # type: ignore[return-value]
+
     if result.granted:
         analytics.capture(
             event="aws_group_access_approved",
@@ -426,6 +430,11 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
         identity_store_id=identity_store_id,
         thread_ts=payload.thread_ts,
     )
+
+    if result.concurrent_operation:
+        logger.info("Skipping follow-up — concurrent group approval already in progress")
+        cache_for_dublicate_requests.clear()
+        return None  # type: ignore[return-value]
 
     if result.granted:
         analytics.capture(

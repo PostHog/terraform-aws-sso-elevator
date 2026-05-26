@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Callable, FrozenSet
 
 import boto3
+import botocore.exceptions
 import slack_sdk
 
 import config
@@ -174,6 +175,10 @@ class ExecuteDecisionResult(BaseModel):
     """Result of executing an access decision."""
 
     granted: bool
+    # True when AWS SSO returned ConflictException because another invocation is
+    # processing the same (account, permission_set, principal). Caller should skip
+    # follow-up side effects — the other invocation will handle them.
+    concurrent_operation: bool = False
     schedule_name: str | None = None
     instance_arn: str | None = None
     permission_set_arn: str | None = None
@@ -186,6 +191,10 @@ class ExecuteDecisionResult(BaseModel):
     identity_store_id: str | None = None
     membership_id: str | None = None
     can_extend_expired_grant: bool = False
+
+
+def _is_conflict_exception(e: Exception) -> bool:
+    return isinstance(e, botocore.exceptions.ClientError) and e.response.get("Error", {}).get("Code") == "ConflictException"
 
 
 def make_decision_on_approve_request(  # noqa: PLR0913
@@ -274,10 +283,22 @@ def execute_decision(  # noqa: PLR0913
 
     logger.info("Creating account assignment", extra={"account_assignment": account_assignment})
 
-    account_assignment_status = sso.create_account_assignment_and_wait_for_result(
-        sso_client,
-        account_assignment,
-    )
+    try:
+        account_assignment_status = sso.create_account_assignment_and_wait_for_result(
+            sso_client,
+            account_assignment,
+        )
+    except Exception as e:
+        if _is_conflict_exception(e):
+            # Another invocation (typically a second approver clicking concurrently, or a
+            # Slack webhook retry) is already creating this assignment. Skip the audit /
+            # schedule / Slack side effects — the winning invocation will produce them.
+            logger.warning(
+                "Concurrent CreateAccountAssignment already in progress, skipping follow-up",
+                extra={"account_assignment": account_assignment},
+            )
+            return ExecuteDecisionResult(granted=False, concurrent_operation=True)
+        raise
 
     # Fetch account name now to avoid API call during revocation
     account = organizations.describe_account(org_client, account_id)
@@ -423,7 +444,18 @@ def execute_decision_on_group_request(  # noqa: PLR0913
             "User is already in the group", extra={"group_id": group.id, "user_id": sso_user_principal_id, "membership_id": membership_id}
         )
     else:
-        membership_id = sso.add_user_to_a_group(group.id, sso_user_principal_id, identity_store_id, identitystore_client)["MembershipId"]
+        try:
+            membership_id = sso.add_user_to_a_group(group.id, sso_user_principal_id, identity_store_id, identitystore_client)[
+                "MembershipId"
+            ]
+        except Exception as e:
+            if _is_conflict_exception(e):
+                logger.warning(
+                    "Concurrent group-membership creation already in progress, skipping follow-up",
+                    extra={"group_id": group.id, "user_id": sso_user_principal_id},
+                )
+                return ExecuteDecisionResult(granted=False, concurrent_operation=True)
+            raise
         logger.info(
             "User added to the group", extra={"group_id": group.id, "user_id": sso_user_principal_id, "membership_id": membership_id}
         )
