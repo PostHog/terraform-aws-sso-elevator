@@ -223,7 +223,7 @@ cache_for_dublicate_requests = {}
 
 
 @handle_errors
-def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> SlackResponse:  # noqa: ARG001, PLR0915
+def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> SlackResponse:  # noqa: ARG001, PLR0911, PLR0915
     logger.info("Handling button click")
     try:
         payload = slack_helpers.ButtonClickedPayload.model_validate(body)
@@ -377,6 +377,14 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
         reason=payload.request.reason,
         thread_ts=payload.thread_ts,
     )
+
+    if result.concurrent_operation:
+        # Another approver (or a Slack retry) is already processing this approval.
+        # Skip side effects — the winning invocation will post the success message
+        # and grant the access.
+        logger.info("Skipping follow-up — concurrent approval already in progress")
+        cache_for_dublicate_requests.clear()
+        return None  # type: ignore[return-value]
 
     if result.granted:
         analytics.capture(
@@ -622,6 +630,10 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
             thread_ts=slack_response["ts"],
         )
         raise
+
+    if result.concurrent_operation:
+        logger.info("Skipping follow-up — concurrent request already in progress")
+        return None  # type: ignore[return-value]
 
     if result.granted:
         analytics.capture(

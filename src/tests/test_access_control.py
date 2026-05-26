@@ -1,7 +1,10 @@
 import datetime
+from unittest.mock import MagicMock, patch
 
+import botocore.exceptions
 import pytest
 
+import access_control
 import entities
 from access_control import (
     AccessRequestDecision,
@@ -1791,3 +1794,87 @@ class TestGroupRollbackOnScheduleFailure:
             assert "Admins" in text
             assert "user-abc-123" in text
             assert "remove principal" in text
+
+
+# ruff: noqa: ARG002
+
+
+def _conflict_exception() -> botocore.exceptions.ClientError:
+    return botocore.exceptions.ClientError(
+        {"Error": {"Code": "ConflictException", "Message": "There is a conflicting operation in process."}},  # type: ignore[arg-type]
+        "CreateAccountAssignment",
+    )
+
+
+class TestConcurrentOperationHandling:
+    """When two approvers click Approve simultaneously, AWS SSO accepts one and rejects
+    the other with ConflictException. The loser should silently skip its follow-up so
+    only the winner's success message reaches Slack — no scary 'unexpected error'."""
+
+    def test_account_grant_returns_concurrent_flag_on_conflict_exception(self, execute_decision_info):
+        decision = ApproveRequestDecision(grant=True, permit=True, based_on_statements=frozenset())
+        with (
+            patch("access_control.sso.get_permission_set", return_value=MagicMock(arn="arn:ps")),
+            patch("access_control.sso.get_user_principal_id_by_email", return_value=("u-1", False)),
+            patch("access_control.sso.get_identity_store_id", return_value="d-1"),
+            patch(
+                "access_control.sso.create_account_assignment_and_wait_for_result",
+                side_effect=_conflict_exception(),
+            ),
+            patch("access_control.schedule.schedule_revoke_event") as mock_schedule,
+            patch("access_control.s3.log_operation") as mock_audit,
+            patch("access_control.event_publisher.publish_access_event") as mock_event,
+        ):
+            result = execute_decision(decision=decision, **execute_decision_info)
+
+        assert result.granted is False
+        assert result.concurrent_operation is True
+        # Side effects MUST be skipped — the winning invocation owns them.
+        mock_schedule.assert_not_called()
+        mock_audit.assert_not_called()
+        mock_event.assert_not_called()
+
+    def test_account_grant_propagates_non_conflict_client_errors(self, execute_decision_info):
+        decision = ApproveRequestDecision(grant=True, permit=True, based_on_statements=frozenset())
+        other_error = botocore.exceptions.ClientError(
+            {"Error": {"Code": "ValidationException", "Message": "bad"}},  # type: ignore[arg-type]
+            "CreateAccountAssignment",
+        )
+        with (
+            patch("access_control.sso.get_permission_set", return_value=MagicMock(arn="arn:ps")),
+            patch("access_control.sso.get_user_principal_id_by_email", return_value=("u-1", False)),
+            patch("access_control.sso.get_identity_store_id", return_value="d-1"),
+            patch("access_control.sso.create_account_assignment_and_wait_for_result", side_effect=other_error),
+            pytest.raises(botocore.exceptions.ClientError),
+        ):
+            execute_decision(decision=decision, **execute_decision_info)
+
+    def test_group_grant_returns_concurrent_flag_on_conflict_exception(self):
+        decision = AccessRequestDecision(
+            grant=True,
+            reason=DecisionReason.ApprovalNotRequired,
+            based_on_statements=frozenset(),
+        )
+        group = entities.aws.SSOGroup(id="g-1", name="Admins", description=None, identity_store_id="d-123")
+        info = {
+            "group": group,
+            "permission_duration": datetime.timedelta(hours=1),
+            "approver": entities.slack.User(email="a@a", id="U_APP", real_name="Approver"),
+            "requester": entities.slack.User(email="r@r", id="U_REQ", real_name="Requester"),
+            "reason": "",
+            "identity_store_id": "d-123",
+            "thread_ts": "t1",
+        }
+        with (
+            patch("access_control.sso.get_user_principal_id_by_email", return_value=("u-1", False)),
+            patch("access_control.sso.is_user_in_group", return_value=None),
+            patch("access_control.sso.add_user_to_a_group", side_effect=_conflict_exception()),
+            patch("access_control.schedule.schedule_group_revoke_event") as mock_schedule,
+            patch("access_control.s3.log_operation") as mock_audit,
+        ):
+            result = access_control.execute_decision_on_group_request(decision=decision, **info)
+
+        assert result.granted is False
+        assert result.concurrent_operation is True
+        mock_schedule.assert_not_called()
+        mock_audit.assert_not_called()
