@@ -1,6 +1,8 @@
 version: 2
 updates:
   - package-ecosystem: "poetry"
+    cooldown:
+      default-days: 7
     directory: "/src"
     schedule:
       interval: "weekly"
@@ -12,6 +14,8 @@ updates:
       - "src"
 
   - package-ecosystem: "poetry"
+    cooldown:
+      default-days: 7
     directory: "/layer"
     schedule:
       interval: "weekly"
@@ -23,6 +27,8 @@ updates:
       - "layer"
 
   - package-ecosystem: "terraform"
+    cooldown:
+      default-days: 7
     directory: "/"
     schedule:
       interval: "weekly"
