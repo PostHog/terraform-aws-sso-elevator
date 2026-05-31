@@ -722,3 +722,8 @@ class TestBuildExtendGrantButton:
         assert block.block_id == "extend_grant_button"
         assert block.elements[0].action_id == "extend_grant"  # type: ignore[union-attr]
         assert "15 min" in block.elements[0].text.text  # type: ignore[union-attr]
+
+
+# Extend-grant handler tests that need to import `main` live in test_main.py because
+# importing `main` requires the heavy mock_main_imports/import_main fixtures defined
+# there. See TestExtendGrantPublishesAccessEvent in test_main.py.
