@@ -13,6 +13,7 @@ import access_control
 import analytics
 import config
 import entities
+import event_publisher
 import group
 import organizations
 import revoker
@@ -1253,6 +1254,17 @@ def handle_extend_grant_button_click(body: dict, client: WebClient, context: Bol
                 )
                 return None
             raise
+
+        # Required so the cross-account eks-auth-updater Lambda restores the user's entry
+        # in the EKS aws-auth ConfigMap. Without it, EKS-bound extensions succeed in SSO
+        # but kubectl access is never re-granted.
+        event_publisher.publish_access_event(
+            action="grant",
+            account_id=payload.account_id,
+            permission_set_name=payload.permission_set_name or "",
+            permission_set_arn=payload.permission_set_arn,
+            user_principal_id=payload.user_principal_id,
+        )
 
         _, schedule_name = schedule.schedule_revoke_event(
             permission_duration=extension_duration,

@@ -1291,3 +1291,221 @@ class TestHandlePermissionSetSelection:
             text="*hello*",
         )
         assert getattr(preview_view, "submit_disabled", None) is False
+
+
+# ---------------------------------------------------------------------------
+# Extend-grant publishes AccessChange event so eks-auth-updater can update the
+# EKS aws-auth ConfigMap on extension. Regression for the bug where extending
+# an EKS grant restored SSO access but left kubectl denied.
+# ---------------------------------------------------------------------------
+
+
+def _build_extend_button_body(payload_json: str, clicker_id: str = "U_REQ") -> dict:
+    """Mimic the Slack button-click body that Bolt passes to the handler."""
+    return {
+        "user": {"id": clicker_id},
+        "channel": {"id": "C_TEST"},
+        "message": {"thread_ts": "1700000000.123456", "ts": "1700000000.123456"},
+        "actions": [{"value": payload_json}],
+        "trigger_id": "tg-1",
+    }
+
+
+def _build_account_extend_payload(requester_id: str = "U_REQ"):  # noqa: ANN202
+    from datetime import datetime, timezone
+
+    from slack_helpers import ExtendGrantButtonPayload
+
+    return ExtendGrantButtonPayload(
+        requester_slack_id=requester_id,
+        expired_at=datetime.now(timezone.utc).isoformat(),  # within 1hr window
+        extension_duration_in_minutes=60,
+        extensions_count=0,
+        account_id="111111111111",
+        permission_set_name="eks-developer",
+        permission_set_arn="arn:aws:sso:::permissionSet/ssoins-1234/ps-5678",
+        instance_arn="arn:aws:sso:::instance/ssoins-1234",
+        user_principal_id="uid-123",
+        account_name="dev",
+        approver={"id": requester_id, "email": "alice@example.com", "real_name": "Alice"},
+        requester={"id": requester_id, "email": "alice@example.com", "real_name": "Alice"},
+    )
+
+
+def _build_group_extend_payload(requester_id: str = "U_REQ"):  # noqa: ANN202
+    from datetime import datetime, timezone
+
+    from slack_helpers import ExtendGrantButtonPayload
+
+    return ExtendGrantButtonPayload(
+        requester_slack_id=requester_id,
+        expired_at=datetime.now(timezone.utc).isoformat(),
+        extension_duration_in_minutes=60,
+        extensions_count=0,
+        group_id="g-1",
+        group_name="developers",
+        identity_store_id="d-x",
+        user_principal_id="uid-123",
+        approver={"id": requester_id, "email": "alice@example.com", "real_name": "Alice"},
+        requester={"id": requester_id, "email": "alice@example.com", "real_name": "Alice"},
+    )
+
+
+class TestExtendGrantPublishesAccessEvent:
+    """When the user extends an EKS-bound account grant, the handler MUST publish an
+    AccessChange grant event so the cross-account eks-auth-updater Lambda restores
+    the user's entry in the EKS aws-auth ConfigMap. Without this event, the SSO
+    assignment is re-created but kubectl access stays denied.
+    """
+
+    def test_account_extend_publishes_grant_event(self, import_main):
+        main_module = import_main
+        payload = _build_account_extend_payload()
+        body = _build_extend_button_body(payload.model_dump_json(), clicker_id="U_REQ")
+        client = MagicMock()
+        client.chat_postMessage.return_value = {"ts": "9999.0001"}
+
+        with (
+            patch.object(main_module.slack_helpers, "delete_extend_grant_button"),
+            patch.object(main_module.slack_helpers, "get_message_from_timestamp", return_value=None),
+            patch.object(main_module.schedule, "schedule_revoke_event", return_value=({"ScheduleArn": "arn:s"}, "new-sched")),
+            patch.object(main_module.sso, "create_account_assignment_and_wait_for_result"),
+            patch.object(main_module.event_publisher, "publish_access_event") as mock_publish,
+            patch("s3.log_operation"),
+        ):
+            main_module.handle_extend_grant_button_click(body=body, client=client, context=MagicMock())
+
+        mock_publish.assert_called_once()
+        kwargs = mock_publish.call_args.kwargs
+        assert kwargs["action"] == "grant"
+        assert kwargs["account_id"] == "111111111111"
+        assert kwargs["permission_set_name"] == "eks-developer"
+        assert kwargs["permission_set_arn"] == "arn:aws:sso:::permissionSet/ssoins-1234/ps-5678"
+        assert kwargs["user_principal_id"] == "uid-123"
+
+    def test_account_extend_publishes_after_assignment_created(self, import_main):
+        """The event must come AFTER CreateAccountAssignment succeeds — publishing first
+        would tell eks-auth-updater to add a ConfigMap entry that doesn't yet correspond
+        to a real SSO assignment."""
+        main_module = import_main
+        call_order: list[str] = []
+
+        payload = _build_account_extend_payload()
+        body = _build_extend_button_body(payload.model_dump_json(), clicker_id="U_REQ")
+        client = MagicMock()
+        client.chat_postMessage.return_value = {"ts": "9999.0001"}
+
+        with (
+            patch.object(main_module.slack_helpers, "delete_extend_grant_button"),
+            patch.object(main_module.slack_helpers, "get_message_from_timestamp", return_value=None),
+            patch.object(main_module.schedule, "schedule_revoke_event", return_value=({"ScheduleArn": "arn:s"}, "new-sched")),
+            patch.object(
+                main_module.sso,
+                "create_account_assignment_and_wait_for_result",
+                side_effect=lambda *a, **kw: call_order.append("create"),  # noqa: ARG005
+            ),
+            patch.object(
+                main_module.event_publisher,
+                "publish_access_event",
+                side_effect=lambda *a, **kw: call_order.append("publish"),  # noqa: ARG005
+            ),
+            patch("s3.log_operation"),
+        ):
+            main_module.handle_extend_grant_button_click(body=body, client=client, context=MagicMock())
+
+        assert call_order == ["create", "publish"]
+
+    def test_account_extend_skips_publish_when_create_conflicts(self, import_main):
+        """If CreateAccountAssignment hits ConflictException (another extend is racing
+        ours), this invocation must NOT publish — the winning invocation owns the
+        event, and double-publishing would re-trigger eks-auth-updater twice."""
+        import botocore.exceptions
+
+        main_module = import_main
+        conflict = botocore.exceptions.ClientError(
+            {"Error": {"Code": "ConflictException", "Message": "in progress"}},  # type: ignore[arg-type]
+            "CreateAccountAssignment",
+        )
+
+        payload = _build_account_extend_payload()
+        body = _build_extend_button_body(payload.model_dump_json(), clicker_id="U_REQ")
+        client = MagicMock()
+
+        with (
+            patch.object(main_module.slack_helpers, "delete_extend_grant_button"),
+            patch.object(main_module.sso, "create_account_assignment_and_wait_for_result", side_effect=conflict),
+            patch.object(main_module.event_publisher, "publish_access_event") as mock_publish,
+            patch.object(main_module.schedule, "schedule_revoke_event") as mock_schedule,
+            patch("s3.log_operation") as mock_audit,
+        ):
+            main_module.handle_extend_grant_button_click(body=body, client=client, context=MagicMock())
+
+        mock_publish.assert_not_called()
+        mock_schedule.assert_not_called()
+        mock_audit.assert_not_called()
+
+    def test_account_extend_skipped_when_window_expired(self, import_main):
+        """When the 1hr extension window has lapsed, no SSO call and no event."""
+        from datetime import datetime, timedelta, timezone
+
+        from slack_helpers import ExtendGrantButtonPayload
+
+        main_module = import_main
+        base = _build_account_extend_payload()
+        payload = ExtendGrantButtonPayload.model_validate(
+            {**base.model_dump(), "expired_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()}
+        )
+        body = _build_extend_button_body(payload.model_dump_json(), clicker_id="U_REQ")
+        client = MagicMock()
+
+        with (
+            patch.object(main_module.sso, "create_account_assignment_and_wait_for_result") as mock_create,
+            patch.object(main_module.event_publisher, "publish_access_event") as mock_publish,
+        ):
+            main_module.handle_extend_grant_button_click(body=body, client=client, context=MagicMock())
+
+        mock_create.assert_not_called()
+        mock_publish.assert_not_called()
+
+    def test_account_extend_skipped_when_wrong_user_clicks(self, import_main):
+        """Only the original requester can extend. Imposter click → no SSO call, no event."""
+        main_module = import_main
+        payload = _build_account_extend_payload(requester_id="U_REQ")
+        body = _build_extend_button_body(payload.model_dump_json(), clicker_id="U_IMPOSTER")
+        client = MagicMock()
+
+        with (
+            patch.object(main_module.sso, "create_account_assignment_and_wait_for_result") as mock_create,
+            patch.object(main_module.event_publisher, "publish_access_event") as mock_publish,
+        ):
+            main_module.handle_extend_grant_button_click(body=body, client=client, context=MagicMock())
+
+        mock_create.assert_not_called()
+        mock_publish.assert_not_called()
+
+    def test_group_extend_does_not_publish_event(self, import_main):
+        """Group access has no downstream EventBridge consumer (eks-auth-updater filters
+        on permission_set_name, not group membership). We don't publish for groups —
+        the event schema is account-shaped and there's nothing to receive it."""
+        main_module = import_main
+        payload = _build_group_extend_payload()
+        body = _build_extend_button_body(payload.model_dump_json(), clicker_id="U_REQ")
+        client = MagicMock()
+        client.chat_postMessage.return_value = {"ts": "9999.0001"}
+
+        with (
+            patch.object(main_module.slack_helpers, "delete_extend_grant_button"),
+            patch.object(main_module.slack_helpers, "get_message_from_timestamp", return_value=None),
+            patch.object(
+                main_module.schedule,
+                "schedule_group_revoke_event",
+                return_value=({"ScheduleArn": "arn:s"}, "new-sched"),
+            ),
+            patch.object(main_module.sso, "add_user_to_a_group", return_value={"MembershipId": "m-1"}),
+            patch.object(main_module.sso, "get_identity_store_id", return_value="d-x"),
+            patch.object(main_module.event_publisher, "publish_access_event") as mock_publish,
+            patch("s3.log_operation"),
+        ):
+            main_module.handle_extend_grant_button_click(body=body, client=client, context=MagicMock())
+
+        mock_publish.assert_not_called()
