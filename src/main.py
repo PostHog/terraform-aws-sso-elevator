@@ -1,7 +1,9 @@
+import time
 from datetime import timedelta
-from typing import Callable
+from typing import Callable, TypeVar
 
 import boto3
+import botocore.exceptions
 import jmespath as jp
 from slack_bolt import Ack, App, BoltContext
 from slack_bolt.adapter.aws_lambda import SlackRequestHandler
@@ -72,6 +74,34 @@ def _external_id_for(body: dict) -> str:
     views.update(external_id=...) without any shared state surviving across Lambda containers.
     """
     return f"req-access:{body['trigger_id']}"[:255]
+
+
+# Transient errors worth retrying silently while populating the modal. Terminal errors (e.g.
+# SSOUserNotFound) are intentionally excluded so they surface immediately instead of looping.
+_RETRYABLE_ERRORS = (
+    botocore.exceptions.ClientError,
+    botocore.exceptions.BotoCoreError,
+    slack_sdk.errors.SlackApiError,
+    ConnectionError,
+    TimeoutError,
+)
+
+
+_RetryResult = TypeVar("_RetryResult")
+
+
+def _with_retries(fn: Callable[[], _RetryResult], *, attempts: int = 5, base_delay: float = 0.5, max_delay: float = 4.0) -> _RetryResult:
+    """Run fn, retrying transient failures with exponential backoff. No user-facing output."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except _RETRYABLE_ERRORS as e:
+            if i == attempts - 1:
+                raise
+            delay = min(max_delay, base_delay * (2**i))
+            logger.warning(f"Retryable failure (attempt {i + 1}/{attempts}): {e}; retrying in {delay}s")
+            time.sleep(delay)
+    raise AssertionError("unreachable: _with_retries exhausted without returning or raising")
 
 
 def build_initial_form_handler(
@@ -199,22 +229,29 @@ def load_select_options_for_account_access_request(client: WebClient, body: dict
     # If no eligible accounts, show empty view
     if not eligible_account_ids:
         logger.info("User has no eligible accounts", extra={"user_id": user_id})
-        return client.views_update(
-            external_id=external_id,
-            view=slack_helpers.RequestForAccessView.build_no_eligible_accounts_view(),
+        return _with_retries(
+            lambda: client.views_update(
+                external_id=external_id,
+                view=slack_helpers.RequestForAccessView.build_no_eligible_accounts_view(),
+            )
         )
 
-    # Get all accounts and filter to eligible ones
-    all_accounts = organizations.get_accounts_from_config_with_cache(org_client=org_client, s3_client=s3_client, cfg=cfg)
+    # Get all accounts and filter to eligible ones. Retried silently: a transient failure here is
+    # the common cause of the modal getting stuck on "Loading..." with nothing submitted yet.
+    all_accounts = _with_retries(
+        lambda: organizations.get_accounts_from_config_with_cache(org_client=org_client, s3_client=s3_client, cfg=cfg)
+    )
     if "*" in eligible_account_ids:
         accounts = all_accounts
     else:
         accounts = [a for a in all_accounts if a.id in eligible_account_ids]
 
     logger.debug(f"Updating view with external_id: {external_id}")
-    return client.views_update(
-        external_id=external_id,
-        view=slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts),
+    return _with_retries(
+        lambda: client.views_update(
+            external_id=external_id,
+            view=slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts),
+        )
     )
 
 

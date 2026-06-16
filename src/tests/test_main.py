@@ -1619,3 +1619,48 @@ class TestHandleLoadPermissionSets:
             main.handle_load_permission_sets(ack, self._body(["111111111111"]), client)
         ack.assert_called_once()
         assert client.views_update.called
+
+
+class TestWithRetries:
+    """_with_retries retries transient AWS/Slack failures silently but not terminal ones."""
+
+    def test_retries_transient_then_succeeds(self, import_main):
+        main = import_main
+        from botocore.exceptions import ClientError
+
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise ClientError({"Error": {"Code": "ThrottlingException"}}, "ListAccounts")
+            return "ok"
+
+        with patch.object(main.time, "sleep", return_value=None):
+            assert main._with_retries(flaky) == "ok"
+        assert calls["n"] == 3
+
+    def test_does_not_retry_non_transient(self, import_main):
+        main = import_main
+        from errors import SSOUserNotFound
+
+        calls = {"n": 0}
+
+        def boom():
+            calls["n"] += 1
+            raise SSOUserNotFound("nope")
+
+        with pytest.raises(SSOUserNotFound):
+            main._with_retries(boom)
+        assert calls["n"] == 1
+
+    def test_reraises_after_exhausting_attempts(self, import_main):
+        main = import_main
+        from botocore.exceptions import ClientError
+
+        def always():
+            raise ClientError({"Error": {"Code": "ThrottlingException"}}, "ListAccounts")
+
+        with patch.object(main.time, "sleep", return_value=None):
+            with pytest.raises(ClientError):
+                main._with_retries(always, attempts=3)
