@@ -466,7 +466,9 @@ T = TypeVar("T", Block, dict)
 
 
 def get_block_id(block: Union[Block, dict]) -> Optional[str]:
-    return block["block_id"] if isinstance(block, dict) else block.block_id
+    # Use .get(): blocks without an explicit block_id (e.g. dividers) serialize to dicts with no
+    # "block_id" key, and treating those as None (rather than raising) keeps remove/insert total.
+    return block.get("block_id") if isinstance(block, dict) else block.block_id
 
 
 def remove_blocks(blocks: list[T], block_ids: list[str]) -> list[T]:
@@ -1225,10 +1227,11 @@ class RequestForGroupAccessView:
     APPROVERS_LOADING_BLOCK_ID = "approvers_preview_loading"
 
     @classmethod
-    def build(cls) -> View:  # noqa: ANN102
+    def build(cls, external_id: str | None = None) -> View:  # noqa: ANN102
         return View(
             type="modal",
             callback_id=cls.CALLBACK_ID,
+            external_id=external_id,
             submit=PlainTextObject(text="Request"),
             close=PlainTextObject(text="Cancel"),
             title=PlainTextObject(text="Request Group Access"),
