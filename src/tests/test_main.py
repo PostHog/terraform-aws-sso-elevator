@@ -1509,3 +1509,158 @@ class TestExtendGrantPublishesAccessEvent:
             main_module.handle_extend_grant_button_click(body=body, client=client, context=MagicMock())
 
         mock_publish.assert_not_called()
+
+
+class TestExternalIdCorrelation:
+    """Open/populate are correlated by a deterministic external_id derived from trigger_id."""
+
+    def test_external_id_is_deterministic_from_trigger_id(self, import_main):
+        main = import_main
+        body = {"trigger_id": "111.222.aaa", "user": {"id": "U1"}}
+        assert main._external_id_for(body) == "req-access:111.222.aaa"
+        assert main._external_id_for(dict(body)) == main._external_id_for(body)
+
+    def test_external_id_truncated_to_255(self, import_main):
+        main = import_main
+        body = {"trigger_id": "t" * 300}
+        assert len(main._external_id_for(body)) == 255
+
+    def test_account_populate_updates_by_external_id_not_view_id(self, import_main):
+        main = import_main
+        import organizations
+        import slack_helpers
+        import sso
+        import statement
+
+        client = MagicMock()
+        body = {"trigger_id": "111.222.aaa", "user": {"id": "U1"}}
+        with (
+            patch.object(sso, "get_identity_store_id", return_value="d-1"),
+            patch.object(slack_helpers, "get_user", return_value=MagicMock(email="u@test.com")),
+            patch.object(sso, "get_user_principal_id_by_email", return_value=("p-1", None)),
+            patch.object(sso, "get_user_group_ids", return_value={"g-1"}),
+            patch.object(statement, "get_accounts_for_user", return_value={"111111111111"}),
+            patch.object(
+                organizations,
+                "get_accounts_from_config_with_cache",
+                return_value=[entities.aws.Account(id="111111111111", name="prod")],
+            ),
+        ):
+            main.load_select_options_for_account_access_request(client, body)
+
+        assert client.views_update.called
+        kwargs = client.views_update.call_args.kwargs
+        assert kwargs.get("external_id") == "req-access:111.222.aaa"
+        assert "view_id" not in kwargs
+
+
+class TestHandleLoadPermissionSets:
+    """The load-permission-sets button reads accounts from view state and updates the modal."""
+
+    def _body(self, account_values):
+        import slack_helpers
+
+        return {
+            "user": {"id": "U1"},
+            "view": {
+                "id": "V123",
+                "hash": "h1",
+                "blocks": slack_helpers.RequestForAccessView.update_with_accounts(
+                    [entities.aws.Account(id="111111111111", name="prod")]
+                ).to_dict()["blocks"],
+                "state": {
+                    "values": {
+                        slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID: {
+                            slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID: {
+                                "selected_options": [{"value": v} for v in account_values],
+                            },
+                        },
+                    }
+                },
+            },
+        }
+
+    def test_no_accounts_selected_acks_without_loading(self, import_main):
+        main = import_main
+        client = MagicMock()
+        ack = MagicMock()
+        main.handle_load_permission_sets(ack, self._body([]), client)
+        ack.assert_called_once()
+        client.views_update.assert_not_called()
+
+    def test_loads_permission_sets_for_selected_accounts(self, import_main):
+        main = import_main
+        import sso
+        import statement
+
+        client = MagicMock()
+
+        def _echo_view(**kwargs):
+            view = kwargs["view"]
+            blocks = view.to_dict()["blocks"] if hasattr(view, "to_dict") else view["blocks"]
+            return MagicMock(data={"view": {"blocks": blocks, "hash": "h2"}})
+
+        client.views_update.side_effect = _echo_view
+        ack = MagicMock()
+        with (
+            patch.object(statement, "get_permission_sets_for_accounts_and_user", return_value={"AdministratorAccess"}),
+            patch.object(
+                sso,
+                "get_permission_sets_from_config_with_cache",
+                return_value=[
+                    entities.aws.PermissionSet(
+                        name="AdministratorAccess", arn="arn:aws:sso:::permissionSet/ssoins-x/ps-1", description=None
+                    )
+                ],
+            ),
+            patch.object(main, "_get_cached_user_info", return_value=({"g-1"}, "u@test.com")),
+            patch.object(main, "classify_auto_approved_permission_sets", return_value=set()),
+        ):
+            main.handle_load_permission_sets(ack, self._body(["111111111111"]), client)
+        ack.assert_called_once()
+        assert client.views_update.called
+
+
+class TestWithRetries:
+    """_with_retries retries transient AWS/Slack failures silently but not terminal ones."""
+
+    def test_retries_transient_then_succeeds(self, import_main):
+        main = import_main
+        from botocore.exceptions import ClientError
+
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise ClientError({"Error": {"Code": "ThrottlingException"}}, "ListAccounts")
+            return "ok"
+
+        with patch.object(main.time, "sleep", return_value=None):
+            assert main._with_retries(flaky) == "ok"
+        assert calls["n"] == 3
+
+    def test_does_not_retry_non_transient(self, import_main):
+        main = import_main
+        from errors import SSOUserNotFound
+
+        calls = {"n": 0}
+
+        def boom():
+            calls["n"] += 1
+            raise SSOUserNotFound("nope")
+
+        with pytest.raises(SSOUserNotFound):
+            main._with_retries(boom)
+        assert calls["n"] == 1
+
+    def test_reraises_after_exhausting_attempts(self, import_main):
+        main = import_main
+        from botocore.exceptions import ClientError
+
+        def always():
+            raise ClientError({"Error": {"Code": "ThrottlingException"}}, "ListAccounts")
+
+        with patch.object(main.time, "sleep", return_value=None):
+            with pytest.raises(ClientError):
+                main._with_retries(always, attempts=3)

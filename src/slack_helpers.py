@@ -69,11 +69,15 @@ class RequestForAccessView:
     APPROVERS_BLOCK_ID = "approvers_preview"
     APPROVERS_LOADING_BLOCK_ID = "approvers_preview_loading"
 
+    LOAD_PS_BUTTON_BLOCK_ID = "load_permission_sets_button"
+    LOAD_PS_ACTION_ID = "load_permission_sets"
+
     @classmethod
-    def build(cls) -> View:
+    def build(cls, external_id: str | None = None) -> View:
         return View(
             type="modal",
             callback_id=cls.CALLBACK_ID,
+            external_id=external_id,
             submit=PlainTextObject(text="Request"),
             submit_disabled=True,
             close=PlainTextObject(text="Cancel"),
@@ -87,15 +91,6 @@ class RequestForAccessView:
                         initial_option=get_max_duration_block(cfg)[0],
                         options=get_max_duration_block(cfg),
                         placeholder=PlainTextObject(text="Select duration"),
-                    ),
-                ),
-                InputBlock(
-                    block_id=cls.REASON_BLOCK_ID,
-                    label=PlainTextObject(text="Reason for access"),
-                    element=PlainTextInputElement(
-                        action_id=cls.REASON_ACTION_ID,
-                        placeholder=PlainTextObject(text="What will this access be used for?"),
-                        multiline=True,
                     ),
                 ),
                 SectionBlock(
@@ -122,7 +117,6 @@ class RequestForAccessView:
         sorted_accounts = sorted(accounts, key=lambda account: account.name)
         return InputBlock(
             block_id=cls.ACCOUNT_BLOCK_ID,
-            dispatch_action=True,
             label=PlainTextObject(text="AWS Account(s)"),
             element=StaticMultiSelectElement(
                 action_id=cls.ACCOUNT_ACTION_ID,
@@ -132,6 +126,30 @@ class RequestForAccessView:
                     Option(text=PlainTextObject(text=f"{account.id} - {account.name}"), value=account.id) for account in sorted_accounts
                 ],
             ),
+        )
+
+    @classmethod
+    def build_reason_input_block(cls) -> InputBlock:
+        return InputBlock(
+            block_id=cls.REASON_BLOCK_ID,
+            label=PlainTextObject(text="Reason for access"),
+            element=PlainTextInputElement(
+                action_id=cls.REASON_ACTION_ID,
+                placeholder=PlainTextObject(text="What will this access be used for?"),
+                multiline=True,
+            ),
+        )
+
+    @classmethod
+    def build_load_permission_sets_button_block(cls) -> ActionsBlock:
+        return ActionsBlock(
+            block_id=cls.LOAD_PS_BUTTON_BLOCK_ID,
+            elements=[
+                ButtonElement(
+                    text=PlainTextObject(text="Load permission sets"),
+                    action_id=cls.LOAD_PS_ACTION_ID,
+                ),
+            ],
         )
 
     @classmethod
@@ -242,7 +260,7 @@ class RequestForAccessView:
         blocks = insert_blocks(
             blocks=blocks,
             blocks_to_insert=[cls.build_permission_set_loading_block()],
-            after_block_id=cls.ACCOUNT_BLOCK_ID,
+            after_block_id=cls.LOAD_PS_BUTTON_BLOCK_ID,
         )
         view.blocks = blocks
         return view
@@ -255,9 +273,10 @@ class RequestForAccessView:
             blocks=view.blocks,
             blocks_to_insert=[
                 cls.build_select_account_input_block(accounts),
-                cls.build_permission_set_placeholder_block(),
+                cls.build_load_permission_sets_button_block(),
+                cls.build_reason_input_block(),
             ],
-            after_block_id=cls.REASON_BLOCK_ID,
+            after_block_id=cls.DURATION_BLOCK_ID,
         )
         return view
 
@@ -292,7 +311,7 @@ class RequestForAccessView:
                     auto_approved_arns=auto_approved_arns,
                 )
             ],
-            after_block_id=cls.ACCOUNT_BLOCK_ID,
+            after_block_id=cls.LOAD_PS_BUTTON_BLOCK_ID,
         )
         view.blocks = blocks
         return view
@@ -391,7 +410,7 @@ class RequestForAccessView:
         blocks = insert_blocks(
             blocks=blocks,
             blocks_to_insert=[cls.build_no_permission_sets_block()],
-            after_block_id=cls.ACCOUNT_BLOCK_ID,
+            after_block_id=cls.LOAD_PS_BUTTON_BLOCK_ID,
         )
         view.blocks = blocks
         return view
@@ -447,7 +466,9 @@ T = TypeVar("T", Block, dict)
 
 
 def get_block_id(block: Union[Block, dict]) -> Optional[str]:
-    return block["block_id"] if isinstance(block, dict) else block.block_id
+    # Use .get(): blocks without an explicit block_id (e.g. dividers) serialize to dicts with no
+    # "block_id" key, and treating those as None (rather than raising) keeps remove/insert total.
+    return block.get("block_id") if isinstance(block, dict) else block.block_id
 
 
 def remove_blocks(blocks: list[T], block_ids: list[str]) -> list[T]:
@@ -1206,10 +1227,11 @@ class RequestForGroupAccessView:
     APPROVERS_LOADING_BLOCK_ID = "approvers_preview_loading"
 
     @classmethod
-    def build(cls) -> View:  # noqa: ANN102
+    def build(cls, external_id: str | None = None) -> View:  # noqa: ANN102
         return View(
             type="modal",
             callback_id=cls.CALLBACK_ID,
+            external_id=external_id,
             submit=PlainTextObject(text="Request"),
             close=PlainTextObject(text="Cancel"),
             title=PlainTextObject(text="Request Group Access"),

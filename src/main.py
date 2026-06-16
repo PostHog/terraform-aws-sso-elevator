@@ -1,7 +1,9 @@
+import time
 from datetime import timedelta
-from typing import Callable
+from typing import Callable, TypeVar
 
 import boto3
+import botocore.exceptions
 import jmespath as jp
 from slack_bolt import Ack, App, BoltContext
 from slack_bolt.adapter.aws_lambda import SlackRequestHandler
@@ -60,7 +62,46 @@ user_view_map = {}
 # NOTE: This in-memory map still has limitations in AWS Lambda:
 # - Lambda containers can be recycled between invocations, causing the map to be empty
 # - For production use with high traffic, consider using DynamoDB or ElastiCache
-# - Current implementation gracefully handles missing view_id by opening a new view
+# - The account-access flow no longer relies on it for the view_id (see _external_id_for);
+#   the group-access flow and the per-user info cache still use it.
+
+
+def _external_id_for(body: dict) -> str:
+    """Deterministic view correlator shared by the open and populate invocations.
+
+    Both invocations receive the same shortcut body with the same trigger_id, so the open
+    handler can set this external_id on the view and the populate handler can target it via
+    views.update(external_id=...) without any shared state surviving across Lambda containers.
+    """
+    return f"req-access:{body['trigger_id']}"[:255]
+
+
+# Transient errors worth retrying silently while populating the modal. Terminal errors (e.g.
+# SSOUserNotFound) are intentionally excluded so they surface immediately instead of looping.
+_RETRYABLE_ERRORS = (
+    botocore.exceptions.ClientError,
+    botocore.exceptions.BotoCoreError,
+    slack_sdk.errors.SlackApiError,
+    ConnectionError,
+    TimeoutError,
+)
+
+
+_RetryResult = TypeVar("_RetryResult")
+
+
+def _with_retries(fn: Callable[[], _RetryResult], *, attempts: int = 5, base_delay: float = 0.5, max_delay: float = 4.0) -> _RetryResult:
+    """Run fn, retrying transient failures with exponential backoff. No user-facing output."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except _RETRYABLE_ERRORS as e:
+            if i == attempts - 1:
+                raise
+            delay = min(max_delay, base_delay * (2**i))
+            logger.warning(f"Retryable failure (attempt {i + 1}/{attempts}): {e}; retrying in {delay}s")
+            time.sleep(delay)
+    raise AssertionError("unreachable: _with_retries exhausted without returning or raising")
 
 
 def build_initial_form_handler(
@@ -108,9 +149,11 @@ def build_initial_form_handler(
         user_id = body.get("user", {}).get("id")
         callback_id = view_class.CALLBACK_ID
 
-        response = client.views_open(trigger_id=trigger_id, view=view_class.build())
+        response = client.views_open(trigger_id=trigger_id, view=view_class.build(external_id=_external_id_for(body)))
 
-        # Store view_id using user_id + callback_id as key for persistence across Lambda invocations
+        # Store view_id using user_id + callback_id as key for persistence across Lambda invocations.
+        # The account-access flow now correlates via external_id instead, but the group-access flow
+        # still reads this on its populate step.
         view_key = f"{user_id}:{callback_id}"
         user_view_map[view_key] = response.data["view"]["id"]  # type: ignore # noqa: PGH003
         logger.debug(f"Stored view_id for key: {view_key}")
@@ -178,37 +221,38 @@ def load_select_options_for_account_access_request(client: WebClient, body: dict
     # Filter accounts based on user's eligible statements
     eligible_account_ids = statement.get_accounts_for_user(cfg.statements, user_group_ids)
 
-    view_id = user_view_map.get(view_key)
+    # Correlate this populate invocation back to the modal opened in the first invocation by a
+    # deterministic external_id (derived from the shared trigger_id) rather than an in-memory
+    # view_id, which is lost when this invocation lands on a different warm container.
+    external_id = _external_id_for(body)
 
     # If no eligible accounts, show empty view
     if not eligible_account_ids:
         logger.info("User has no eligible accounts", extra={"user_id": user_id})
-        view = slack_helpers.RequestForAccessView.build_no_eligible_accounts_view()
-        if view_id:
-            return client.views_update(view_id=view_id, view=view)
-        trigger_id = body["trigger_id"]
-        return client.views_open(trigger_id=trigger_id, view=view)
+        return _with_retries(
+            lambda: client.views_update(
+                external_id=external_id,
+                view=slack_helpers.RequestForAccessView.build_no_eligible_accounts_view(),
+            )
+        )
 
-    # Get all accounts and filter to eligible ones
-    all_accounts = organizations.get_accounts_from_config_with_cache(org_client=org_client, s3_client=s3_client, cfg=cfg)
+    # Get all accounts and filter to eligible ones. Retried silently: a transient failure here is
+    # the common cause of the modal getting stuck on "Loading..." with nothing submitted yet.
+    all_accounts = _with_retries(
+        lambda: organizations.get_accounts_from_config_with_cache(org_client=org_client, s3_client=s3_client, cfg=cfg)
+    )
     if "*" in eligible_account_ids:
         accounts = all_accounts
     else:
         accounts = [a for a in all_accounts if a.id in eligible_account_ids]
 
-    if not view_id:
-        logger.warning(
-            f"View ID not found for key: {view_key}. "
-            "This happens when Lambda container is recycled between shortcut invocations. "
-            "Opening a new view as fallback."
+    logger.debug(f"Updating view with external_id: {external_id}")
+    return _with_retries(
+        lambda: client.views_update(
+            external_id=external_id,
+            view=slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts),
         )
-        trigger_id = body["trigger_id"]
-        view = slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts)
-        return client.views_open(trigger_id=trigger_id, view=view)
-
-    logger.debug(f"Updating view with view_id from key: {view_key}")
-    view = slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts)
-    return client.views_update(view_id=view_id, view=view)
+    )
 
 
 app.shortcut("request_for_access")(
@@ -824,10 +868,9 @@ def _get_cached_user_info(view_key: str, user_id: str, client: "WebClient") -> t
     return user_group_ids, user_email
 
 
-@app.action(slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID)
-def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackResponse | None:
+def handle_load_permission_sets(ack: Ack, body: dict, client: WebClient) -> SlackResponse | None:
     ack()
-    logger.info("Handling account selection")
+    logger.info("Handling load-permission-sets button")
 
     selected_options = (
         jp.search(
@@ -859,10 +902,10 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
             view_hash = new_hash
         return response
 
-    # No accounts selected → show placeholder, disable submit
+    # Button pressed with no accounts selected -> nothing to load; leave the modal as-is.
     if not account_ids:
-        updated_view = slack_helpers.RequestForAccessView.build_no_permission_sets_view(view_blocks=body["view"]["blocks"])
-        return safe_views_update(updated_view)
+        logger.info("Load-permission-sets pressed with no accounts selected; ignoring")
+        return None
 
     # Immediately replace stale permission set list with a loading placeholder before any AWS calls.
     loading_response = safe_views_update(slack_helpers.RequestForAccessView.show_permission_set_loading(body["view"]["blocks"]))
@@ -929,6 +972,9 @@ def handle_account_selection(ack: Ack, body: dict, client: WebClient) -> SlackRe
         auto_approved_arns=auto_approved_arns,
     )
     return safe_views_update(updated_view)
+
+
+app.action(slack_helpers.RequestForAccessView.LOAD_PS_ACTION_ID)(handle_load_permission_sets)
 
 
 def handle_permission_set_selection(ack: Ack, body: dict, client: WebClient) -> SlackResponse | None:
