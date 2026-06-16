@@ -734,6 +734,7 @@ class TestApprovalRequestViewPreviewBlocks:
         view = RequestForAccessView.update_with_permission_sets(
             view_blocks=[
                 {"type": "input", "block_id": RequestForAccessView.ACCOUNT_BLOCK_ID},
+                {"type": "actions", "block_id": RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID},
                 {"type": "input", "block_id": RequestForAccessView.PERMISSION_SET_PLACEHOLDER_BLOCK_ID},
             ],
             permission_sets=[permission_set],
@@ -751,6 +752,7 @@ class TestApprovalRequestViewPreviewBlocks:
         view = RequestForAccessView.update_with_permission_sets(
             view_blocks=[
                 {"type": "input", "block_id": RequestForAccessView.ACCOUNT_BLOCK_ID},
+                {"type": "actions", "block_id": RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID},
                 {"type": "input", "block_id": RequestForAccessView.PERMISSION_SET_PLACEHOLDER_BLOCK_ID},
             ],
             permission_sets=[permission_set],
@@ -770,6 +772,7 @@ class TestApprovalRequestViewPreviewBlocks:
         view = RequestForAccessView.update_with_permission_sets(
             view_blocks=[
                 {"type": "input", "block_id": RequestForAccessView.ACCOUNT_BLOCK_ID},
+                {"type": "actions", "block_id": RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID},
                 {"type": "input", "block_id": RequestForAccessView.PERMISSION_SET_PLACEHOLDER_BLOCK_ID},
             ],
             permission_sets=[permission_set],
@@ -1096,3 +1099,58 @@ class TestUpdateWithPermissionSets:
         assert len(groups) == 2
         assert _group_label(groups[0]) == "Auto approved"
         assert _group_label(groups[1]) == "Requires approval"
+
+
+class TestRequestForAccessViewStructure:
+    """Modal structure: reason deferred + ordered last, account select inert, load button present."""
+
+    def _account(self, id_: str, name: str):
+        from entities.aws import Account
+
+        return Account(id=id_, name=name)
+
+    def _block_ids(self, view) -> list:  # noqa: ANN001
+        from slack_helpers import get_block_id
+
+        return [get_block_id(b) for b in view.blocks]
+
+    def test_initial_build_has_no_reason_block(self):
+        view = RequestForAccessView.build()
+        ids = self._block_ids(view)
+        assert RequestForAccessView.REASON_BLOCK_ID not in ids
+        assert RequestForAccessView.LOADING_BLOCK_ID in ids
+        assert RequestForAccessView.DURATION_BLOCK_ID in ids
+
+    def test_build_sets_external_id(self):
+        view = RequestForAccessView.build(external_id="req-access:abc.def")
+        assert view.external_id == "req-access:abc.def"
+
+    def test_update_with_accounts_orders_account_button_reason(self):
+        accounts = [self._account("111111111111", "prod"), self._account("222222222222", "dev")]
+        view = RequestForAccessView.update_with_accounts(accounts)
+        ids = self._block_ids(view)
+        assert ids.index(RequestForAccessView.ACCOUNT_BLOCK_ID) < ids.index(RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID)
+        assert ids.index(RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID) < ids.index(RequestForAccessView.REASON_BLOCK_ID)
+        assert RequestForAccessView.LOADING_BLOCK_ID not in ids
+
+    def test_account_select_has_no_dispatch_action(self):
+        accounts = [self._account("111111111111", "prod")]
+        block = RequestForAccessView.build_select_account_input_block(accounts)
+        assert getattr(block, "dispatch_action", False) in (False, None)
+
+    def test_load_button_uses_load_action_id(self):
+        block = RequestForAccessView.build_load_permission_sets_button_block()
+        assert block.elements[0].action_id == RequestForAccessView.LOAD_PS_ACTION_ID  # type: ignore[union-attr]
+
+    def test_update_with_permission_sets_inserts_after_button_and_keeps_reason(self):
+        accounts = [self._account("111111111111", "prod")]
+        view = RequestForAccessView.update_with_accounts(accounts)
+        current_blocks = view.blocks
+        updated = RequestForAccessView.update_with_permission_sets(
+            view_blocks=current_blocks,
+            permission_sets=[_ps("AdministratorAccess")],
+        )
+        ids = [b["block_id"] if isinstance(b, dict) else b.block_id for b in updated.blocks]
+        assert ids.index(RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID) < ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID)
+        assert ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID) < ids.index(RequestForAccessView.REASON_BLOCK_ID)
+        assert updated.submit_disabled is False  # type: ignore[attr-defined]
