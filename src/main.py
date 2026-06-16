@@ -793,8 +793,26 @@ def handle_request_for_access_submittion(
             )
 
 
+def acknowledge_request_for_access(ack: Ack, body: dict) -> None:
+    # Slack can't disable the submit button, so reject submissions with no permission set selected
+    # (e.g. "Load permission sets" was never clicked) and surface an inline error instead of
+    # silently dropping them. Once the permission-set block exists it is a required input, so Slack
+    # already blocks submit there; this guards the case where the block is absent.
+    if not slack_helpers.RequestForAccessView.parse_multi(body):
+        ack(
+            response_action="errors",
+            errors={
+                slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID: (
+                    "Select account(s), click 'Load permission sets', and choose a permission set before submitting."
+                )
+            },
+        )
+        return
+    ack()
+
+
 app.view(slack_helpers.RequestForAccessView.CALLBACK_ID)(
-    ack=acknowledge_request,
+    ack=acknowledge_request_for_access,
     lazy=[handle_request_for_access_submittion],
 )
 

@@ -84,16 +84,6 @@ class RequestForAccessView:
             title=PlainTextObject(text="Request AWS Access"),
             blocks=[
                 SectionBlock(
-                    block_id=cls.DURATION_BLOCK_ID,
-                    text=MarkdownTextObject(text="How long do you need access?"),
-                    accessory=StaticSelectElement(
-                        action_id=cls.DURATION_ACTION_ID,
-                        initial_option=get_max_duration_block(cfg)[0],
-                        options=get_max_duration_block(cfg),
-                        placeholder=PlainTextObject(text="Select duration"),
-                    ),
-                ),
-                SectionBlock(
                     block_id=cls.LOADING_BLOCK_ID,
                     text=MarkdownTextObject(
                         text=":hourglass: Loading available accounts and permission sets...",
@@ -106,6 +96,19 @@ class RequestForAccessView:
                     ),
                 ),
             ],
+        )
+
+    @classmethod
+    def build_duration_block(cls) -> SectionBlock:
+        return SectionBlock(
+            block_id=cls.DURATION_BLOCK_ID,
+            text=MarkdownTextObject(text="How long do you need access?"),
+            accessory=StaticSelectElement(
+                action_id=cls.DURATION_ACTION_ID,
+                initial_option=get_max_duration_block(cfg)[0],
+                options=get_max_duration_block(cfg),
+                placeholder=PlainTextObject(text="Select duration"),
+            ),
         )
 
     @classmethod
@@ -268,16 +271,20 @@ class RequestForAccessView:
     @classmethod
     def update_with_accounts(cls, accounts: list[entities.aws.Account]) -> View:
         view = cls.build()
-        view.blocks = remove_blocks(view.blocks, block_ids=[cls.LOADING_BLOCK_ID])
+        # Insert the inputs where the loading placeholder is, then drop the placeholder. The
+        # duration block is added here (not in build) so it stays hidden until accounts load, and
+        # it sits directly above the reason field.
         view.blocks = insert_blocks(
             blocks=view.blocks,
             blocks_to_insert=[
                 cls.build_select_account_input_block(accounts),
                 cls.build_load_permission_sets_button_block(),
+                cls.build_duration_block(),
                 cls.build_reason_input_block(),
             ],
-            after_block_id=cls.DURATION_BLOCK_ID,
+            after_block_id=cls.LOADING_BLOCK_ID,
         )
+        view.blocks = remove_blocks(view.blocks, block_ids=[cls.LOADING_BLOCK_ID])
         return view
 
     @classmethod

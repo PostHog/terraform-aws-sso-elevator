@@ -1114,23 +1114,24 @@ class TestRequestForAccessViewStructure:
 
         return [get_block_id(b) for b in view.blocks]
 
-    def test_initial_build_has_no_reason_block(self):
+    def test_initial_build_has_no_reason_or_duration_block(self):
         view = RequestForAccessView.build()
         ids = self._block_ids(view)
         assert RequestForAccessView.REASON_BLOCK_ID not in ids
+        assert RequestForAccessView.DURATION_BLOCK_ID not in ids
         assert RequestForAccessView.LOADING_BLOCK_ID in ids
-        assert RequestForAccessView.DURATION_BLOCK_ID in ids
 
     def test_build_sets_external_id(self):
         view = RequestForAccessView.build(external_id="req-access:abc.def")
         assert view.external_id == "req-access:abc.def"
 
-    def test_update_with_accounts_orders_account_button_reason(self):
+    def test_update_with_accounts_orders_account_button_duration_reason(self):
         accounts = [self._account("111111111111", "prod"), self._account("222222222222", "dev")]
         view = RequestForAccessView.update_with_accounts(accounts)
         ids = self._block_ids(view)
         assert ids.index(RequestForAccessView.ACCOUNT_BLOCK_ID) < ids.index(RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID)
-        assert ids.index(RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID) < ids.index(RequestForAccessView.REASON_BLOCK_ID)
+        assert ids.index(RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID) < ids.index(RequestForAccessView.DURATION_BLOCK_ID)
+        assert ids.index(RequestForAccessView.DURATION_BLOCK_ID) < ids.index(RequestForAccessView.REASON_BLOCK_ID)
         assert RequestForAccessView.LOADING_BLOCK_ID not in ids
 
     def test_account_select_has_no_dispatch_action(self):
