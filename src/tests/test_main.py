@@ -1664,3 +1664,38 @@ class TestWithRetries:
         with patch.object(main.time, "sleep", return_value=None):
             with pytest.raises(ClientError):
                 main._with_retries(always, attempts=3)
+
+
+class TestAcknowledgeRequestForAccess:
+    """The account view ack rejects submissions with no permission set selected."""
+
+    def _submission(self, *, with_permission_set: bool) -> dict:
+        import slack_helpers
+
+        v = slack_helpers.RequestForAccessView
+        values = {
+            v.DURATION_BLOCK_ID: {v.DURATION_ACTION_ID: {"selected_option": {"value": "01:00"}}},
+            v.ACCOUNT_BLOCK_ID: {v.ACCOUNT_ACTION_ID: {"selected_options": [{"value": "111111111111"}]}},
+            v.REASON_BLOCK_ID: {v.REASON_ACTION_ID: {"value": "because reasons"}},
+        }
+        if with_permission_set:
+            values[v.PERMISSION_SET_BLOCK_ID] = {
+                v.PERMISSION_SET_ACTION_ID: {"selected_option": {"value": "arn:aws:sso:::permissionSet/ssoins-x/ps-1"}}
+            }
+        return {"user": {"id": "U1"}, "view": {"state": {"values": values}}}
+
+    def test_rejects_when_no_permission_set(self, import_main):
+        main = import_main
+        import slack_helpers
+
+        ack = MagicMock()
+        main.acknowledge_request_for_access(ack, self._submission(with_permission_set=False))
+        assert ack.call_args.kwargs.get("response_action") == "errors"
+        assert slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID in ack.call_args.kwargs.get("errors", {})
+
+    def test_accepts_when_permission_set_present(self, import_main):
+        main = import_main
+
+        ack = MagicMock()
+        main.acknowledge_request_for_access(ack, self._submission(with_permission_set=True))
+        assert ack.call_args.kwargs.get("response_action") is None
