@@ -711,3 +711,55 @@ class TestStuckPastDueScheduleFilter:
 
         assert len(events) == 1
         assert isinstance(events[0], ScheduledRevokeEvent)
+
+
+def _not_found_error() -> botocore.exceptions.ClientError:
+    return botocore.exceptions.ClientError(
+        {"Error": {"Code": "ResourceNotFoundException", "Message": "Schedule does not exist"}},  # type: ignore[arg-type]
+        "GetSchedule",
+    )
+
+
+def _make_scheduler_client(page_names: list[str], get_schedule_side_effect) -> MagicMock:
+    """Build a mock EventBridgeSchedulerClient whose list_schedules paginator yields
+    `page_names`, and whose get_schedule resolves via `get_schedule_side_effect`
+    (a callable receiving the schedule Name kwarg)."""
+    client = MagicMock()
+    paginator = MagicMock()
+    paginator.paginate.return_value = [{"Schedules": [{"Name": name} for name in page_names]}]
+    client.get_paginator.return_value = paginator
+    client.get_schedule.side_effect = lambda **kwargs: get_schedule_side_effect(kwargs["Name"])
+    return client
+
+
+class TestGetSchedulesVanishingScheduleRace:
+    """get_schedules enumerates via list_schedules then get_schedule per name. A schedule
+    deleted between those two calls (revoker firing, supersession) must be skipped, not
+    raised — otherwise the ResourceNotFoundException bubbles up and rolls back an unrelated,
+    just-granted assignment."""
+
+    def test_vanished_schedule_is_skipped_not_raised(self):
+        survivor = {"Name": "survivor", "ScheduleExpression": "at(2099-01-01T00:00:00)"}
+
+        def side_effect(name: str):
+            if name == "vanished":
+                raise _not_found_error()
+            return survivor
+
+        client = _make_scheduler_client(["vanished", "survivor"], side_effect)
+
+        result = schedule.get_schedules(client)
+
+        assert result == [survivor]
+
+    def test_other_client_errors_still_propagate(self):
+        def side_effect(_name: str):
+            raise botocore.exceptions.ClientError(
+                {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},  # type: ignore[arg-type]
+                "GetSchedule",
+            )
+
+        client = _make_scheduler_client(["a"], side_effect)
+
+        with pytest.raises(botocore.exceptions.ClientError):
+            schedule.get_schedules(client)

@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 import config
 import entities
+import errors
 import slack_helpers
 import sso
 from events import (
@@ -94,7 +95,17 @@ def get_schedules(client: EventBridgeSchedulerClient) -> list[scheduler_type_def
         for schedule_name in schedules_names:
             if not schedule_name:
                 continue
-            full_schedule = client.get_schedule(GroupName=cfg.schedule_group_name, Name=schedule_name)
+            try:
+                full_schedule = client.get_schedule(GroupName=cfg.schedule_group_name, Name=schedule_name)
+            except botocore.exceptions.ClientError as e:
+                # The schedule was deleted between list_schedules and this get_schedule call
+                # (a revoker firing + deleting it, or a concurrent supersession). It no longer
+                # exists, so skip it. Letting this propagate would abort — and roll back — an
+                # unrelated, just-granted assignment whose scheduling triggered this enumeration.
+                if errors.is_resource_not_found_exception(e):
+                    logger.info("Schedule vanished during enumeration, skipping", extra={"schedule_name": schedule_name})
+                    continue
+                raise
             scheduled_events.append(full_schedule)
     return scheduled_events
 
