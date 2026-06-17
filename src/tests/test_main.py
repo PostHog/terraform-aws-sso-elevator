@@ -1267,8 +1267,8 @@ class TestHandlePermissionSetSelection:
         assert result is None
         ack.assert_called_once()
 
-    def test_loading_view_does_not_disable_submit(self):
-        """show_approvers_loading() must keep submit enabled — preview is informational."""
+    def test_loading_view_keeps_submit_button(self):
+        """show_approvers_loading() must keep the submit button — preview is informational."""
         import slack_helpers
 
         loading_view = slack_helpers.RequestForAccessView.show_approvers_loading(
@@ -1277,10 +1277,10 @@ class TestHandlePermissionSetSelection:
                 {"type": "input", "block_id": "select_permission_set"},
             ]
         )
-        assert getattr(loading_view, "submit_disabled", None) is False
+        assert loading_view.submit is not None
 
-    def test_preview_view_does_not_disable_submit(self):
-        """update_with_approvers() must keep submit enabled."""
+    def test_preview_view_keeps_submit_button(self):
+        """update_with_approvers() must keep the submit button."""
         import slack_helpers
 
         preview_view = slack_helpers.RequestForAccessView.update_with_approvers(
@@ -1290,7 +1290,7 @@ class TestHandlePermissionSetSelection:
             ],
             text="*hello*",
         )
-        assert getattr(preview_view, "submit_disabled", None) is False
+        assert preview_view.submit is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1669,15 +1669,16 @@ class TestWithRetries:
 class TestAcknowledgeRequestForAccess:
     """The account view ack rejects submissions with no permission set selected."""
 
-    def _submission(self, *, with_permission_set: bool) -> dict:
+    def _submission(self, *, with_permission_set: bool, with_duration: bool = True) -> dict:
         import slack_helpers
 
         v = slack_helpers.RequestForAccessView
         values = {
-            v.DURATION_BLOCK_ID: {v.DURATION_ACTION_ID: {"selected_option": {"value": "01:00"}}},
             v.ACCOUNT_BLOCK_ID: {v.ACCOUNT_ACTION_ID: {"selected_options": [{"value": "111111111111"}]}},
             v.REASON_BLOCK_ID: {v.REASON_ACTION_ID: {"value": "because reasons"}},
         }
+        if with_duration:
+            values[v.DURATION_BLOCK_ID] = {v.DURATION_ACTION_ID: {"selected_option": {"value": "01:00"}}}
         if with_permission_set:
             values[v.PERMISSION_SET_BLOCK_ID] = {
                 v.PERMISSION_SET_ACTION_ID: {"selected_option": {"value": "arn:aws:sso:::permissionSet/ssoins-x/ps-1"}}
@@ -1699,3 +1700,14 @@ class TestAcknowledgeRequestForAccess:
         ack = MagicMock()
         main.acknowledge_request_for_access(ack, self._submission(with_permission_set=True))
         assert ack.call_args.kwargs.get("response_action") is None
+
+    def test_rejects_when_no_duration(self, import_main):
+        # Backstop: a submit that lands before the duration field is present (the original incident)
+        # is rejected with the modal kept open, not crashed on.
+        main = import_main
+        import slack_helpers
+
+        ack = MagicMock()
+        main.acknowledge_request_for_access(ack, self._submission(with_permission_set=True, with_duration=False))
+        assert ack.call_args.kwargs.get("response_action") == "errors"
+        assert slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID in ack.call_args.kwargs.get("errors", {})

@@ -803,7 +803,8 @@ def acknowledge_request_for_access(ack: Ack, body: dict) -> None:
             response_action="errors",
             errors={
                 slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID: (
-                    "Select account(s), click 'Load permission sets', and choose a permission set before submitting."
+                    "This form isn't fully loaded or is incomplete. Select account(s), click 'Load permission sets', "
+                    "choose a permission set, and pick a duration before submitting."
                 )
             },
         )

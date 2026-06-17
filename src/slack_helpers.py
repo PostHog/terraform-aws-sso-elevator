@@ -74,12 +74,13 @@ class RequestForAccessView:
 
     @classmethod
     def build(cls, external_id: str | None = None) -> View:
+        # Loading view: no input blocks, so deliberately NO submit button. Slack ignores
+        # `submit_disabled` on normal modals, so withholding the button entirely is the only way to
+        # stop a submit before accounts have loaded. Form views add it back via `_form_base`.
         return View(
             type="modal",
             callback_id=cls.CALLBACK_ID,
             external_id=external_id,
-            submit=PlainTextObject(text="Request"),
-            submit_disabled=True,
             close=PlainTextObject(text="Cancel"),
             title=PlainTextObject(text="Request AWS Access"),
             blocks=[
@@ -97,6 +98,15 @@ class RequestForAccessView:
                 ),
             ],
         )
+
+    @classmethod
+    def _form_base(cls) -> View:
+        """Loading view plus the Request submit button — base for every view that carries input
+        blocks. The bare `build()` (loading) and `build_no_eligible_accounts_view()` intentionally
+        have no submit button because there is nothing to submit yet."""
+        view = cls.build()
+        view.submit = PlainTextObject(text="Request")
+        return view
 
     @classmethod
     def build_duration_block(cls) -> SectionBlock:
@@ -247,8 +257,7 @@ class RequestForAccessView:
 
     @classmethod
     def show_permission_set_loading(cls, view_blocks: list) -> View:
-        view = cls.build()
-        view.submit_disabled = True  # type: ignore[attr-defined]
+        view = cls._form_base()
         blocks = remove_blocks(
             view_blocks,
             block_ids=[
@@ -270,7 +279,7 @@ class RequestForAccessView:
 
     @classmethod
     def update_with_accounts(cls, accounts: list[entities.aws.Account]) -> View:
-        view = cls.build()
+        view = cls._form_base()
         # Insert the inputs where the loading placeholder is, then drop the placeholder. The
         # duration block is added here (not in build) so it stays hidden until accounts load, and
         # it sits directly above the reason field.
@@ -295,8 +304,7 @@ class RequestForAccessView:
         display_names: dict[str, str] | None = None,
         auto_approved_arns: set[str] | None = None,
     ) -> View:
-        view = cls.build()
-        view.submit_disabled = False  # type: ignore[attr-defined]
+        view = cls._form_base()
         # Start from the current blocks, remove placeholder
         blocks = remove_blocks(
             view_blocks,
@@ -339,9 +347,7 @@ class RequestForAccessView:
 
     @classmethod
     def show_approvers_loading(cls, view_blocks: list) -> View:
-        view = cls.build()
-        # Preview is informational only — never block submit while it's resolving.
-        view.submit_disabled = False  # type: ignore[attr-defined]
+        view = cls._form_base()
         blocks = remove_blocks(view_blocks, block_ids=[cls.APPROVERS_BLOCK_ID, cls.APPROVERS_LOADING_BLOCK_ID])
         blocks = insert_blocks(
             blocks=blocks,
@@ -353,8 +359,7 @@ class RequestForAccessView:
 
     @classmethod
     def update_with_approvers(cls, view_blocks: list, text: str) -> View:
-        view = cls.build()
-        view.submit_disabled = False  # type: ignore[attr-defined]
+        view = cls._form_base()
         blocks = remove_blocks(view_blocks, block_ids=[cls.APPROVERS_BLOCK_ID, cls.APPROVERS_LOADING_BLOCK_ID])
         blocks = insert_blocks(
             blocks=blocks,
@@ -380,12 +385,11 @@ class RequestForAccessView:
 
     @classmethod
     def build_no_eligible_accounts_view(cls) -> View:
-        """Build view with warning when user has no eligible accounts."""
+        """Build view with warning when user has no eligible accounts. No submit button — there is
+        nothing to request."""
         return View(
             type="modal",
             callback_id=cls.CALLBACK_ID,
-            submit=PlainTextObject(text="Request"),
-            submit_disabled=True,
             close=PlainTextObject(text="Cancel"),
             title=PlainTextObject(text="Request AWS Access"),
             blocks=[
@@ -401,9 +405,10 @@ class RequestForAccessView:
 
     @classmethod
     def build_no_permission_sets_view(cls, view_blocks: list) -> View:
-        """Build view with warning and disabled submit button."""
-        view = cls.build()
-        view.submit_disabled = True  # type: ignore[attr-defined]
+        """Build view warning that no permission sets are available. The account input block is still
+        present (so Slack requires a submit button); a submit with no permission set is rejected by
+        the `acknowledge_request_for_access` guard."""
+        view = cls._form_base()
         blocks = remove_blocks(
             view_blocks,
             block_ids=[
@@ -445,6 +450,11 @@ class RequestForAccessView:
         """Parse submission into one RequestForAccess per selected account."""
         values = jp.search("view.state.values", obj)
         hhmm = jp.search(f"{cls.DURATION_BLOCK_ID}.{cls.DURATION_ACTION_ID}.selected_option.value", values)
+        if hhmm is None:
+            # The duration block is only inserted once accounts finish loading, so a fast submit can
+            # arrive before it exists. Ignore it rather than crashing on None.split(":").
+            logger.warning("Modal submitted before the duration field was ready, ignoring")
+            return []
         hours, minutes = map(int, hhmm.split(":"))
         duration = timedelta(hours=hours, minutes=minutes)
 
