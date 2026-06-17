@@ -876,6 +876,18 @@ class TestParseMulti:
         results = RequestForAccessView.parse_multi(obj)
         assert results == []
 
+    def test_none_duration_returns_empty(self):
+        """Modal submitted before the duration field was rendered returns empty list (does not crash).
+
+        The duration block is only inserted once accounts finish loading, so a fast submit can
+        arrive with no duration value. Parsing must not raise.
+        """
+        obj = self._make_submission(["111111111111"])
+        # Simulate the duration block not yet present in the view (submitted before accounts loaded)
+        del obj["view"]["state"]["values"][RequestForAccessView.DURATION_BLOCK_ID]
+        results = RequestForAccessView.parse_multi(obj)
+        assert results == []
+
 
 def _ps(name: str, arn: str = "") -> PermissionSet:
     """Create a PermissionSet for testing."""
@@ -1134,6 +1146,21 @@ class TestRequestForAccessViewStructure:
         assert ids.index(RequestForAccessView.DURATION_BLOCK_ID) < ids.index(RequestForAccessView.REASON_BLOCK_ID)
         assert RequestForAccessView.LOADING_BLOCK_ID not in ids
 
+    def test_initial_build_has_no_submit_button(self):
+        # No Request button until the form is loaded, so it cannot be submitted while accounts load.
+        view = RequestForAccessView.build()
+        assert view.submit is None
+
+    def test_no_eligible_accounts_view_has_no_submit_button(self):
+        # Terminal "no accounts" view has nothing to submit, so no Request button.
+        view = RequestForAccessView.build_no_eligible_accounts_view()
+        assert view.submit is None
+
+    def test_update_with_accounts_has_submit_button(self):
+        # Once the form (with inputs) is rendered, the Request button appears.
+        view = RequestForAccessView.update_with_accounts([self._account("111111111111", "prod")])
+        assert view.submit is not None
+
     def test_account_select_has_no_dispatch_action(self):
         accounts = [self._account("111111111111", "prod")]
         block = RequestForAccessView.build_select_account_input_block(accounts)
@@ -1154,4 +1181,4 @@ class TestRequestForAccessViewStructure:
         ids = [b["block_id"] if isinstance(b, dict) else b.block_id for b in updated.blocks]
         assert ids.index(RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID) < ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID)
         assert ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID) < ids.index(RequestForAccessView.REASON_BLOCK_ID)
-        assert updated.submit_disabled is False  # type: ignore[attr-defined]
+        assert updated.submit is not None
