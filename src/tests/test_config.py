@@ -473,3 +473,71 @@ def test_config_parses_display_names_from_env():
     config_dict["permission_set_display_names"] = json.dumps({"admin": "Administrator"})
     cfg = config.Config(**config_dict)
     assert cfg.permission_set_display_names == {"admin": "Administrator"}
+
+
+ACCOUNT_SECTIONS = [
+    {"name": "Production", "accounts": ["111111111111", "222222222222"]},
+    {"name": "Sandbox", "accounts": ["333333333333"]},
+]
+
+
+def test_config_parses_account_sections_from_s3(mock_s3_client, monkeypatch):
+    """S3 config with account_sections is parsed into Config, preserving order."""
+    import boto3
+
+    s3_config = {
+        "statements": [VALID_STATEMENT_DICT],
+        "group_statements": [VALID_GROUP_STATEMENT_DICT],
+        "account_sections": ACCOUNT_SECTIONS,
+    }
+    mock_s3_client.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(s3_config).encode("utf-8"))}
+    monkeypatch.setattr(boto3, "client", lambda service: mock_s3_client if service == "s3" else MagicMock())
+
+    config_dict = valid_config_dict(secondary_fallback_email_domains_as_json=False, permission_duration_list_override_as_json=False)
+    config_dict["config_s3_key"] = "config/approval-config.json"
+    del config_dict["statements"]
+    del config_dict["group_statements"]
+
+    cfg = config.Config(**config_dict)
+    assert cfg.account_sections == ACCOUNT_SECTIONS
+
+
+def test_config_defaults_empty_account_sections_from_s3(mock_s3_client, monkeypatch):
+    """S3 config without account_sections defaults to empty list."""
+    import boto3
+
+    s3_config = {
+        "statements": [VALID_STATEMENT_DICT],
+        "group_statements": [VALID_GROUP_STATEMENT_DICT],
+    }
+    mock_s3_client.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(s3_config).encode("utf-8"))}
+    monkeypatch.setattr(boto3, "client", lambda service: mock_s3_client if service == "s3" else MagicMock())
+
+    config_dict = valid_config_dict(secondary_fallback_email_domains_as_json=False, permission_duration_list_override_as_json=False)
+    config_dict["config_s3_key"] = "config/approval-config.json"
+    del config_dict["statements"]
+    del config_dict["group_statements"]
+
+    cfg = config.Config(**config_dict)
+    assert cfg.account_sections == []
+
+
+def test_config_parses_account_sections_from_env():
+    """Env var path: JSON string is parsed into a list."""
+    config_dict = valid_config_dict(
+        secondary_fallback_email_domains_as_json=False,
+        permission_duration_list_override_as_json=False,
+    )
+    config_dict["account_sections"] = json.dumps(ACCOUNT_SECTIONS)
+    cfg = config.Config(**config_dict)
+    assert cfg.account_sections == ACCOUNT_SECTIONS
+
+
+def test_config_defaults_empty_account_sections_from_env():
+    """Env var path: absent account_sections defaults to empty list."""
+    config_dict = valid_config_dict(
+        secondary_fallback_email_domains_as_json=False,
+        permission_duration_list_override_as_json=False,
+    )
+    cfg = config.Config(**config_dict)
+    assert cfg.account_sections == []

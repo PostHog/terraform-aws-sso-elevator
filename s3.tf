@@ -66,6 +66,7 @@ resource "aws_s3_object" "approval_config" {
     statements                   = var.config
     group_statements             = var.group_config
     permission_set_display_names = var.permission_set_display_names
+    account_sections             = var.account_sections
   })
   content_type = "application/json"
 

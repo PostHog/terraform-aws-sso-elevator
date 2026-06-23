@@ -904,6 +904,13 @@ def _group_label(group) -> str:  # noqa: ANN001
     return group.label if isinstance(group.label, str) else group.label.text
 
 
+def _acct(id_: str, name: str):  # noqa: ANN001, ANN201
+    """Create an Account for testing."""
+    from entities.aws import Account
+
+    return Account(id=id_, name=name)
+
+
 class TestGetPermissionSetDisplayName:
     """Tests for RequestForAccessView._get_permission_set_display_name."""
 
@@ -1064,6 +1071,171 @@ class TestBuildSelectPermissionSetInputBlock:
         )
         groups = block.element.option_groups  # type: ignore[union-attr]
         assert groups[0].options[0].value == "arn:aws:sso:::permissionSet/ssoins-abc/ps-123"
+
+
+class TestBuildSelectAccountInputBlockSections:
+    """Sectioning of the AWS account multi-select via the account_sections config."""
+
+    def _build(self, accounts, sections):  # noqa: ANN001, ANN202
+        return RequestForAccessView.build_select_account_input_block(accounts, account_sections=sections)
+
+    def test_none_sections_uses_flat_sorted_options(self):
+        accounts = [_acct("111111111111", "b"), _acct("222222222222", "a")]
+        block = RequestForAccessView.build_select_account_input_block(accounts, account_sections=None)
+        assert block.element.option_groups is None  # type: ignore[union-attr]
+        assert block.element.options is not None  # type: ignore[union-attr]
+        # Existing behavior preserved: flat list, alphabetical by name.
+        assert [_opt_text(o) for o in block.element.options] == ["222222222222 - a", "111111111111 - b"]  # type: ignore[union-attr]
+
+    def test_empty_sections_uses_flat_options(self):
+        accounts = [_acct("111111111111", "a")]
+        block = RequestForAccessView.build_select_account_input_block(accounts, account_sections=[])
+        assert block.element.option_groups is None  # type: ignore[union-attr]
+        assert block.element.options is not None  # type: ignore[union-attr]
+
+    def test_groups_render_in_config_order(self):
+        accounts = [
+            _acct("111111111111", "prod-us"),
+            _acct("333333333333", "infra-dev"),
+            _acct("444444444444", "sandbox-a"),
+        ]
+        sections = [
+            {"name": "Production", "accounts": ["111111111111"]},
+            {"name": "Dev / Infra", "accounts": ["333333333333"]},
+            {"name": "Sandbox", "accounts": ["444444444444"]},
+        ]
+        groups = self._build(accounts, sections).element.option_groups  # type: ignore[union-attr]
+        assert [_group_label(g) for g in groups] == ["Production", "Dev / Infra", "Sandbox"]
+
+    def test_alphabetical_within_section(self):
+        accounts = [
+            _acct("111111111111", "zebra"),
+            _acct("222222222222", "alpha"),
+            _acct("333333333333", "mango"),
+        ]
+        sections = [{"name": "All", "accounts": ["111111111111", "222222222222", "333333333333"]}]
+        groups = self._build(accounts, sections).element.option_groups  # type: ignore[union-attr]
+        assert [_opt_text(o) for o in groups[0].options] == [
+            "222222222222 - alpha",
+            "333333333333 - mango",
+            "111111111111 - zebra",
+        ]
+
+    def test_unmapped_accounts_go_to_trailing_other_group(self):
+        accounts = [_acct("111111111111", "prod"), _acct("999999999999", "mystery")]
+        sections = [{"name": "Production", "accounts": ["111111111111"]}]
+        groups = self._build(accounts, sections).element.option_groups  # type: ignore[union-attr]
+        assert [_group_label(g) for g in groups] == ["Production", "Other"]
+        assert [_opt_text(o) for o in groups[1].options] == ["999999999999 - mystery"]
+
+    def test_duplicate_id_first_section_wins(self):
+        accounts = [_acct("111111111111", "shared")]
+        sections = [
+            {"name": "First", "accounts": ["111111111111"]},
+            {"name": "Second", "accounts": ["111111111111"]},
+        ]
+        groups = self._build(accounts, sections).element.option_groups  # type: ignore[union-attr]
+        # Second section ends up empty and is omitted.
+        assert [_group_label(g) for g in groups] == ["First"]
+        assert [o.value for o in groups[0].options] == ["111111111111"]
+
+    def test_ineligible_id_in_section_skipped(self):
+        accounts = [_acct("111111111111", "prod")]
+        sections = [{"name": "Production", "accounts": ["111111111111", "222222222222"]}]
+        groups = self._build(accounts, sections).element.option_groups  # type: ignore[union-attr]
+        assert [_group_label(g) for g in groups] == ["Production"]
+        assert [o.value for o in groups[0].options] == ["111111111111"]
+
+    def test_empty_section_omitted(self):
+        accounts = [_acct("111111111111", "prod")]
+        sections = [
+            {"name": "Empty", "accounts": ["888888888888"]},
+            {"name": "Production", "accounts": ["111111111111"]},
+        ]
+        groups = self._build(accounts, sections).element.option_groups  # type: ignore[union-attr]
+        assert [_group_label(g) for g in groups] == ["Production"]
+
+    def test_no_configured_section_matches_falls_back_to_flat(self):
+        accounts = [_acct("111111111111", "prod")]
+        sections = [{"name": "Nope", "accounts": ["888888888888"]}]
+        block = self._build(accounts, sections)
+        # No configured section produced members, so we avoid a lone "Other" header.
+        assert block.element.option_groups is None  # type: ignore[union-attr]
+        assert [o.value for o in block.element.options] == ["111111111111"]  # type: ignore[union-attr]
+
+    def test_option_value_and_text_format(self):
+        accounts = [_acct("111111111111", "prod-us")]
+        sections = [{"name": "Production", "accounts": ["111111111111"]}]
+        opt = self._build(accounts, sections).element.option_groups[0].options[0]  # type: ignore[union-attr]
+        assert opt.value == "111111111111"
+        assert _opt_text(opt) == "111111111111 - prod-us"
+
+    def test_update_with_accounts_threads_sections(self):
+        accounts = [_acct("111111111111", "prod"), _acct("999999999999", "x")]
+        sections = [{"name": "Production", "accounts": ["111111111111"]}]
+        view = RequestForAccessView.update_with_accounts(accounts, account_sections=sections)
+        acct_block = next(b for b in view.blocks if getattr(b, "block_id", None) == RequestForAccessView.ACCOUNT_BLOCK_ID)
+        assert [_group_label(g) for g in acct_block.element.option_groups] == ["Production", "Other"]  # type: ignore[union-attr]
+
+    def test_grouped_view_serializes_to_valid_slack_json(self):
+        # slack_sdk's JsonValidators only fire at serialization, so attribute asserts alone don't
+        # prove the block is valid. Render the whole view to catch invalid labels/options.
+        accounts = [_acct("111111111111", "prod"), _acct("999999999999", "mystery")]
+        sections = [{"name": "Production", "accounts": ["111111111111"]}]
+        view = RequestForAccessView.update_with_accounts(accounts, account_sections=sections)
+        rendered = view.to_dict()  # raises SlackObjectFormationError if any block is invalid
+        block = next(b for b in rendered["blocks"] if b.get("block_id") == RequestForAccessView.ACCOUNT_BLOCK_ID)
+        labels = [g["label"]["text"] for g in block["element"]["option_groups"]]
+        assert labels == ["Production", "Other"]
+        # Every option-group label must carry non-empty text (Slack rejects a textless plain_text).
+        for group in block["element"]["option_groups"]:
+            assert group["label"]["text"]
+
+    def test_blank_section_name_is_skipped_not_rendered_empty(self):
+        # Empty/whitespace names can only reach the builder off the Terraform-validated path
+        # (hand-edited S3 / env). They must be dropped, never emitted as an empty-text label.
+        accounts = [_acct("111111111111", "prod")]
+        sections = [{"name": "   ", "accounts": ["111111111111"]}]
+        block = self._build(accounts, sections)
+        # No configured section survived, so it falls back to a flat list (no empty-label group).
+        assert block.element.option_groups is None  # type: ignore[union-attr]
+        assert [o.value for o in block.element.options] == ["111111111111"]  # type: ignore[union-attr]
+        block.element.to_dict()  # type: ignore[union-attr]  # must serialize cleanly
+
+    def test_blank_name_with_other_valid_section_still_serializes(self):
+        accounts = [_acct("111111111111", "prod"), _acct("222222222222", "dev")]
+        sections = [{"name": "", "accounts": ["111111111111"]}, {"name": "Dev", "accounts": ["222222222222"]}]
+        block = self._build(accounts, sections)
+        groups = block.element.option_groups  # type: ignore[union-attr]
+        # Blank-named section dropped; its account falls to Other. Dev renders normally.
+        assert [_group_label(g) for g in groups] == ["Dev", "Other"]
+        block.element.to_dict()  # type: ignore[union-attr]
+
+    def test_non_dict_section_is_skipped(self):
+        accounts = [_acct("111111111111", "prod")]
+        sections = ["not-a-dict", {"name": "Production", "accounts": ["111111111111"]}]
+        groups = self._build(accounts, sections).element.option_groups  # type: ignore[union-attr]
+        assert [_group_label(g) for g in groups] == ["Production"]
+
+    def test_numeric_account_id_is_coerced_and_matched(self):
+        # Hand-edited/env JSON may carry unquoted (int) ids; they should still group, not silently drop.
+        accounts = [_acct("111111111111", "prod")]
+        sections = [{"name": "Production", "accounts": [111111111111]}]
+        groups = self._build(accounts, sections).element.option_groups  # type: ignore[union-attr]
+        assert [_group_label(g) for g in groups] == ["Production"]
+        assert [o.value for o in groups[0].options] == ["111111111111"]
+
+    def test_non_list_accounts_field_is_skipped(self):
+        accounts = [_acct("111111111111", "prod")]
+        sections = [{"name": "Bad", "accounts": "111111111111"}]
+        block = self._build(accounts, sections)
+        assert block.element.option_groups is None  # type: ignore[union-attr]
+
+    def test_flat_path_sort_is_case_insensitive(self):
+        # Locks in the case-insensitive (name.lower()) flat-path ordering.
+        accounts = [_acct("111111111111", "Zebra"), _acct("222222222222", "alpha")]
+        block = RequestForAccessView.build_select_account_input_block(accounts, account_sections=None)
+        assert [_opt_text(o) for o in block.element.options] == ["222222222222 - alpha", "111111111111 - Zebra"]  # type: ignore[union-attr]
 
 
 class TestUpdateWithPermissionSets:

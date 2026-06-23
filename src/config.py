@@ -72,6 +72,11 @@ def load_approval_config_from_s3(s3_client: S3Client, bucket_name: str, s3_key: 
 _initial_config_etag: str | None = None
 
 
+def _maybe_json(value: object) -> object:
+    """Decode a JSON string env value into a Python object; pass through non-strings unchanged."""
+    return json.loads(value) if isinstance(value, str) else value
+
+
 def parse_statement(_dict: dict) -> Statement:
     def to_set_if_list_or_str(v: list | str) -> frozenset[str]:
         if isinstance(v, list):
@@ -150,6 +155,10 @@ class Config(BaseSettings):
     groups: frozenset[str]
     permission_set_display_names: dict[str, str]
 
+    # Optional, ordered list of {"name": str, "accounts": [account_id, ...]} used to group the
+    # account multi-select in the Slack modal into sections. Empty = flat alphabetical list.
+    account_sections: list = []
+
     s3_bucket_for_audit_entry_name: str
     s3_bucket_prefix_for_partitions: str
 
@@ -196,18 +205,14 @@ class Config(BaseSettings):
             statements_raw = config_data.get("statements")
             group_statements_raw = config_data.get("group_statements")
             permission_set_display_names = config_data.get("permission_set_display_names", {})
+            account_sections = config_data.get("account_sections", [])
         else:
-            # Fallback to environment variables
-            statements_raw = values.get("statements")
-            if statements_raw is not None and isinstance(statements_raw, str):
-                statements_raw = json.loads(statements_raw)
-            group_statements_raw = values.get("group_statements")
-            if group_statements_raw is not None and isinstance(group_statements_raw, str):
-                group_statements_raw = json.loads(group_statements_raw)
-            permission_set_display_names_raw = values.get("permission_set_display_names")
-            if isinstance(permission_set_display_names_raw, str):
-                permission_set_display_names_raw = json.loads(permission_set_display_names_raw)
-            permission_set_display_names = permission_set_display_names_raw or {}
+            # Fallback to environment variables. _maybe_json decodes a JSON string and passes
+            # already-parsed values through unchanged (None stays None).
+            statements_raw = _maybe_json(values.get("statements"))
+            group_statements_raw = _maybe_json(values.get("group_statements"))
+            permission_set_display_names = _maybe_json(values.get("permission_set_display_names")) or {}
+            account_sections = _maybe_json(values.get("account_sections")) or []
 
         # Parse statements
         if statements_raw is not None:
@@ -238,6 +243,7 @@ class Config(BaseSettings):
             "group_statements": frozenset(group_statements),
             "groups": groups,
             "permission_set_display_names": permission_set_display_names,
+            "account_sections": account_sections,
             "s3_bucket_prefix_for_partitions": s3_bucket_prefix_for_partitions,
         }
 

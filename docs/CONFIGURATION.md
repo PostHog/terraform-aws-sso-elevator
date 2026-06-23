@@ -147,3 +147,40 @@ Only allow users who are members of specific SSO groups to request access:
 ```
 
 Users not in the specified group(s) won't see this permission set as an option when requesting access. The user must be a member of at least one of the listed groups.
+
+## Grouping Accounts in the Slack Modal (`account_sections`)
+
+The "AWS Account(s)" multi-select in the request modal is a single, flat,
+alphabetically-sorted list by default. Once you have many accounts this gets hard to
+scan. The separate `account_sections` module variable (not a statement field) lets you
+split it into labeled sections.
+
+It is an **ordered** list of `{ name, accounts }` objects. This is a top-level module
+input, delivered to the Lambda alongside `statements` in the S3 config object — it does
+not affect access decisions, only how the dropdown is presented.
+
+```hcl
+account_sections = [
+  { name = "Production",  accounts = ["111111111111", "222222222222"] },
+  { name = "Dev / Infra", accounts = ["333333333333"] },
+  { name = "Sandbox",     accounts = ["444444444444", "555555555555"] },
+]
+```
+
+Behavior:
+
+- **Section order** follows the list order (it is a JSON list, so order is preserved).
+- **Within a section**, accounts are sorted alphabetically by account name.
+- **First-wins**: an account listed in more than one section appears only in the first.
+- **Other**: any eligible account not listed in any section is placed in a trailing
+  "Other" section. If *no* configured section matches any eligible account, the modal
+  falls back to the flat alphabetical list (no lone "Other" header).
+- **Eligibility is unchanged**: listing an account a requester can't access is harmless —
+  it simply isn't shown. Sections never grant or restrict access; statements still do.
+- **Limits**: section labels are truncated to 75 characters. The account list is capped at
+  99 entries total (the module truncates to Slack's per-select option limit) — the same cap
+  as the flat list. Sections regroup the accounts; they do not raise the cap.
+- Account ids are validated as 12-digit strings and section names must be non-empty at
+  `terraform plan` time.
+
+Leave `account_sections` empty (`[]`, the default) to keep the flat list.
