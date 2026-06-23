@@ -110,6 +110,43 @@ EOT
   default     = {}
 }
 
+variable "account_sections" {
+  description = <<EOT
+Optional, ordered list of sections used to group the "AWS Account(s)" multi-select
+in the Slack request modal. Each section is { name = "<label>", accounts = ["<id>", ...] }.
+Sections render in the order listed; accounts are sorted alphabetically by name within
+each section. An account listed in multiple sections appears only in the first. Accounts
+not listed in any section fall into a trailing "Other" section. Listing an account id the
+requester is not eligible for is harmless (it is simply not shown).
+Example:
+[
+  { name = "Production",  accounts = ["111111111111", "222222222222"] },
+  { name = "Dev / Infra", accounts = ["333333333333"] },
+]
+Leave empty ([]) to keep a single flat, alphabetically-sorted list.
+Note: section labels are truncated to 75 characters, and the account list is capped at 99 entries
+(Slack's per-select option limit) the same as the flat list -- sections regroup accounts, they do
+not raise the cap.
+EOT
+  type        = list(object({ name = string, accounts = list(string) }))
+  default     = []
+
+  validation {
+    condition     = alltrue([for s in var.account_sections : trimspace(s.name) != ""])
+    error_message = "Each account_sections entry must have a non-empty name."
+  }
+
+  validation {
+    condition     = alltrue([for s in var.account_sections : length(s.accounts) > 0])
+    error_message = "Each account_sections entry must list at least one account (an empty section is silently dropped)."
+  }
+
+  validation {
+    condition     = alltrue([for s in var.account_sections : alltrue([for a in s.accounts : can(regex("^[0-9]{12}$", a))])])
+    error_message = "Every account id in account_sections must be a 12-digit AWS account id."
+  }
+}
+
 variable "revoker_lambda_name" {
   description = "value for the revoker lambda name"
   type        = string

@@ -250,7 +250,7 @@ def load_select_options_for_account_access_request(client: WebClient, body: dict
     return _with_retries(
         lambda: client.views_update(
             external_id=external_id,
-            view=slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts),
+            view=slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts, account_sections=cfg.account_sections),
         )
     )
 

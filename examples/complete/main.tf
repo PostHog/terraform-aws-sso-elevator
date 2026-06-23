@@ -129,4 +129,18 @@ module "aws_sso_elevator" {
       "AllowSelfApproval" : true,
     },
   ]
+
+  # Optional: group the "AWS Account(s)" multi-select in the Slack modal into labeled
+  # sections. Sections render in the order listed; accounts are sorted alphabetically
+  # within each. Any eligible account not listed here goes into a trailing "Other"
+  # section. Account ids must be 12 digits. Leave unset for a single flat list.
+  #
+  # NOTE: these ids only appear in the dropdown if the requester is eligible for them via
+  # `config` above. The placeholder "account_id" Resources here match nothing, but the
+  # `Resource = "*"` statements make every org account eligible -- so replace these with
+  # real 12-digit account ids from your org to see them grouped.
+  account_sections = [
+    { name = "Production", accounts = ["111111111111", "222222222222"] },
+    { name = "Sandbox", accounts = ["333333333333"] },
+  ]
 }

@@ -121,24 +121,84 @@ class RequestForAccessView:
             ),
         )
 
+    @staticmethod
+    def _account_option(account: entities.aws.Account) -> Option:
+        return Option(text=PlainTextObject(text=f"{account.id} - {account.name}"), value=account.id)
+
+    @staticmethod
+    def _account_sort_key(account: entities.aws.Account) -> str:
+        return account.name.lower()
+
+    @staticmethod
+    def _option_group(label: str, options: list[Option]) -> OptionGroup:
+        # Slack caps option-group labels at 75 chars; truncate so a long label can't fail the view.
+        return OptionGroup(label=PlainTextObject(text=label[:75]), options=options)
+
     @classmethod
-    def build_select_account_input_block(cls, accounts: list[entities.aws.Account]) -> InputBlock:
-        # TODO: handle case when there are more than 100 accounts
-        # 99 is the limit for StaticMultiSelectElement
+    def _build_account_option_groups(cls, accounts: list[entities.aws.Account], account_sections: list) -> list[OptionGroup]:
+        """Group accounts into OptionGroups following the configured section order. An account is
+        placed in the first section that lists it (first-wins); ids not present in `accounts` are
+        skipped and empty sections are dropped. Accounts in no section land in a trailing "Other"
+        group. Returns [] when no configured section matched anything, so the caller can fall back
+        to a flat list rather than render a lone, meaningless "Other" header.
+
+        Defensive against malformed config: the Terraform layer validates the canonical path, but
+        `account_sections` can also arrive via a hand-edited S3 object or env var. Non-dict sections,
+        blank names, and non-list `accounts` are skipped (rather than crashing the modal), and ids
+        are compared as strings so an unquoted numeric id in JSON still matches."""
+        account_by_id = {account.id: account for account in accounts}
+        used: set[str] = set()
+        groups: list[OptionGroup] = []
+        for section in account_sections:
+            if not isinstance(section, dict):
+                continue
+            name = str(section.get("name", "")).strip()
+            section_accounts = section.get("accounts") or []
+            if not name or not isinstance(section_accounts, list):
+                continue
+            members = [
+                account_by_id[str(acct_id)] for acct_id in section_accounts if str(acct_id) in account_by_id and str(acct_id) not in used
+            ]
+            used.update(account.id for account in members)
+            if members:
+                members.sort(key=cls._account_sort_key)
+                groups.append(cls._option_group(name, [cls._account_option(a) for a in members]))
+        if not groups:
+            return []
+        leftover = sorted((a for a in accounts if a.id not in used), key=cls._account_sort_key)
+        if leftover:
+            groups.append(cls._option_group("Other", [cls._account_option(a) for a in leftover]))
+        return groups
+
+    @classmethod
+    def build_select_account_input_block(cls, accounts: list[entities.aws.Account], account_sections: list | None = None) -> InputBlock:
+        # TODO: handle case when there are more than 100 accounts.
+        # 99 is Slack's hard cap on the number of options in a (multi) select; sectioning regroups
+        # the same accounts into option_groups, it does not raise that cap.
         if len(accounts) > 99:  # noqa: PLR2004
             accounts = accounts[:99]
-        sorted_accounts = sorted(accounts, key=lambda account: account.name)
-        return InputBlock(
-            block_id=cls.ACCOUNT_BLOCK_ID,
-            label=PlainTextObject(text="AWS Account(s)"),
-            element=StaticMultiSelectElement(
+
+        # Build the element with exactly one of option_groups / options (a `**kwargs` merge would
+        # erase the per-parameter types and trip pyright, so keep the two explicit constructions).
+        option_groups = cls._build_account_option_groups(accounts, account_sections) if account_sections else None
+        if option_groups:
+            element = StaticMultiSelectElement(
                 action_id=cls.ACCOUNT_ACTION_ID,
                 placeholder=PlainTextObject(text="Select account(s)"),
                 max_selected_items=10,
-                options=[
-                    Option(text=PlainTextObject(text=f"{account.id} - {account.name}"), value=account.id) for account in sorted_accounts
-                ],
-            ),
+                option_groups=option_groups,
+            )
+        else:
+            element = StaticMultiSelectElement(
+                action_id=cls.ACCOUNT_ACTION_ID,
+                placeholder=PlainTextObject(text="Select account(s)"),
+                max_selected_items=10,
+                options=[cls._account_option(a) for a in sorted(accounts, key=cls._account_sort_key)],
+            )
+        return InputBlock(
+            block_id=cls.ACCOUNT_BLOCK_ID,
+            label=PlainTextObject(text="AWS Account(s)"),
+            element=element,
         )
 
     @classmethod
@@ -195,16 +255,12 @@ class RequestForAccessView:
             groups = []
             if auto_approved:
                 groups.append(
-                    OptionGroup(
-                        label=PlainTextObject(text="Auto approved"),
-                        options=[cls._build_permission_set_option(ps, display_names) for ps in auto_approved],
-                    )
+                    cls._option_group("Auto approved", [cls._build_permission_set_option(ps, display_names) for ps in auto_approved])
                 )
             if requires_approval:
                 groups.append(
-                    OptionGroup(
-                        label=PlainTextObject(text="Requires approval"),
-                        options=[cls._build_permission_set_option(ps, display_names) for ps in requires_approval],
+                    cls._option_group(
+                        "Requires approval", [cls._build_permission_set_option(ps, display_names) for ps in requires_approval]
                     )
                 )
             if groups:
@@ -278,7 +334,7 @@ class RequestForAccessView:
         return view
 
     @classmethod
-    def update_with_accounts(cls, accounts: list[entities.aws.Account]) -> View:
+    def update_with_accounts(cls, accounts: list[entities.aws.Account], account_sections: list | None = None) -> View:
         view = cls._form_base()
         # Insert the inputs where the loading placeholder is, then drop the placeholder. The
         # duration block is added here (not in build) so it stays hidden until accounts load, and
@@ -286,7 +342,7 @@ class RequestForAccessView:
         view.blocks = insert_blocks(
             blocks=view.blocks,
             blocks_to_insert=[
-                cls.build_select_account_input_block(accounts),
+                cls.build_select_account_input_block(accounts, account_sections=account_sections),
                 cls.build_load_permission_sets_button_block(),
                 cls.build_duration_block(),
                 cls.build_reason_input_block(),
