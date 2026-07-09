@@ -54,6 +54,8 @@ module "access_requester_slack_handler" {
 
       CLEANUP_ALERT_SLACK_GROUP = var.cleanup_alert_slack_group
 
+      ACCESS_DOCS_URL = var.access_docs_url
+
       POST_UPDATE_TO_SLACK = var.revoker_post_update_to_slack
 
       SSO_INSTANCE_ARN                            = local.sso_instance_arn

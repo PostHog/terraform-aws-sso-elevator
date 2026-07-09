@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import slack_sdk.errors
-from entities.aws import PermissionSet
+import slack_helpers
+from entities.aws import Account, PermissionSet, SSOGroup
 
 from slack_helpers import (
     ButtonClickedPayload,
@@ -906,7 +907,6 @@ def _group_label(group) -> str:  # noqa: ANN001
 
 def _acct(id_: str, name: str):  # noqa: ANN001, ANN201
     """Create an Account for testing."""
-    from entities.aws import Account
 
     return Account(id=id_, name=name)
 
@@ -1243,7 +1243,6 @@ class TestUpdateWithPermissionSets:
 
     def _make_view_blocks(self) -> list:
         """Build a view and return its blocks after account selection (with placeholder)."""
-        from entities.aws import Account
 
         accounts = [Account(id="111111111111", name="Test")]
         view = RequestForAccessView.update_with_accounts(accounts)
@@ -1289,8 +1288,6 @@ class TestRequestForAccessViewStructure:
     """Modal structure: reason deferred + ordered last, account select inert, load button present."""
 
     def _account(self, id_: str, name: str):
-        from entities.aws import Account
-
         return Account(id=id_, name=name)
 
     def _block_ids(self, view) -> list:  # noqa: ANN001
@@ -1354,3 +1351,96 @@ class TestRequestForAccessViewStructure:
         assert ids.index(RequestForAccessView.LOAD_PS_BUTTON_BLOCK_ID) < ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID)
         assert ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID) < ids.index(RequestForAccessView.REASON_BLOCK_ID)
         assert updated.submit is not None
+
+
+DOCS_URL = "https://runbooks.example.com/access#roles"
+
+
+def _patch_docs_url(monkeypatch, url: str) -> None:  # noqa: ANN001
+    """Override only `access_docs_url` on the real (frozen) config via model_copy, leaving the rest
+    of the config intact so the duration block still builds."""
+    monkeypatch.setattr(slack_helpers, "cfg", slack_helpers.cfg.model_copy(update={"access_docs_url": url}))
+
+
+def _block_ids(view) -> list:  # noqa: ANN001
+    return [slack_helpers.get_block_id(b) for b in view.blocks]
+
+
+def _hint_text(view, block_id: str) -> str:  # noqa: ANN001
+    block = next(b for b in view.blocks if slack_helpers.get_block_id(b) == block_id)
+    return block.elements[0].text  # type: ignore[union-attr]
+
+
+class TestAccountDocsHint:
+    """Docs hint beside the permission-set dropdown in the account-access modal."""
+
+    def _form_with_permission_sets(self):  # noqa: ANN202
+        view = RequestForAccessView.update_with_accounts([_acct("111111111111", "prod")])
+        return RequestForAccessView.update_with_permission_sets(view.blocks, [_ps("AdministratorAccess"), _ps("ReadOnly")])
+
+    def test_hint_rendered_directly_below_dropdown_when_url_set(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = self._form_with_permission_sets()
+        ids = _block_ids(view)
+        hint_id = RequestForAccessView.PERMISSION_SET_DOCS_HINT_BLOCK_ID
+        assert ids.index(hint_id) == ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID) + 1
+        text = _hint_text(view, hint_id)
+        assert DOCS_URL in text
+        assert "See the access docs" in text
+
+    def test_hint_absent_when_url_empty(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, "")
+        view = self._form_with_permission_sets()
+        assert RequestForAccessView.PERMISSION_SET_DOCS_HINT_BLOCK_ID not in _block_ids(view)
+
+    def test_hint_not_duplicated_after_account_reselection(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = self._form_with_permission_sets()
+        # Re-selecting an account: the loading state drops the hint, then it is rebuilt exactly once.
+        view = RequestForAccessView.show_permission_set_loading(view.blocks)
+        assert RequestForAccessView.PERMISSION_SET_DOCS_HINT_BLOCK_ID not in _block_ids(view)
+        view = RequestForAccessView.update_with_permission_sets(view.blocks, [_ps("ReadOnly")])
+        assert _block_ids(view).count(RequestForAccessView.PERMISSION_SET_DOCS_HINT_BLOCK_ID) == 1
+
+    def test_order_is_dropdown_then_hint_then_approvers(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = self._form_with_permission_sets()
+        view = RequestForAccessView.update_with_approvers(view.blocks, "Requires approval from <@U1>")
+        ids = _block_ids(view)
+        assert (
+            ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID)
+            < ids.index(RequestForAccessView.PERMISSION_SET_DOCS_HINT_BLOCK_ID)
+            < ids.index(RequestForAccessView.APPROVERS_BLOCK_ID)
+        )
+
+
+def _sso_group(name: str, id_: str) -> SSOGroup:
+    return SSOGroup(name=name, id=id_, description=None, identity_store_id="d-1")
+
+
+class TestGroupDocsHint:
+    """Docs hint beside the group dropdown in the group-access modal."""
+
+    def test_hint_rendered_directly_below_dropdown_when_url_set(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = RequestForGroupAccessView.update_with_groups([_sso_group("Engineering", "g-1")])
+        ids = _block_ids(view)
+        hint_id = RequestForGroupAccessView.GROUP_DOCS_HINT_BLOCK_ID
+        assert ids.index(hint_id) == ids.index(RequestForGroupAccessView.GROUP_BLOCK_ID) + 1
+        assert DOCS_URL in _hint_text(view, hint_id)
+
+    def test_hint_absent_when_url_empty(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, "")
+        view = RequestForGroupAccessView.update_with_groups([_sso_group("Engineering", "g-1")])
+        assert RequestForGroupAccessView.GROUP_DOCS_HINT_BLOCK_ID not in _block_ids(view)
+
+    def test_order_is_dropdown_then_hint_then_approvers(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = RequestForGroupAccessView.update_with_groups([_sso_group("Engineering", "g-1")])
+        view = RequestForGroupAccessView.update_with_approvers(view.blocks, "Requires approval")
+        ids = _block_ids(view)
+        assert (
+            ids.index(RequestForGroupAccessView.GROUP_BLOCK_ID)
+            < ids.index(RequestForGroupAccessView.GROUP_DOCS_HINT_BLOCK_ID)
+            < ids.index(RequestForGroupAccessView.APPROVERS_BLOCK_ID)
+        )

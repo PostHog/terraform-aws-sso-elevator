@@ -24,7 +24,9 @@ jobs:
           python-version: "3.13"
 
       - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
+          sh /tmp/uv-install.sh
 
       - name: Install pre-commit
         run: pip3 install pre-commit
@@ -36,7 +38,8 @@ jobs:
 
       - name: Install tflint
         run: |
-          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh -o /tmp/tflint-install.sh
+          bash /tmp/tflint-install.sh
 
       - name: Install terraform-docs
         run: |
