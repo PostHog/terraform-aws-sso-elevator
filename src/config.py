@@ -159,6 +159,10 @@ class Config(BaseSettings):
     # account multi-select in the Slack modal into sections. Empty = flat alphabetical list.
     account_sections: list = []
 
+    # Optional URL to access documentation. When set, a "See the access docs" link is rendered
+    # beside the permission-set/group dropdown in the request modals. Empty = no link shown.
+    access_docs_url: str = ""
+
     s3_bucket_for_audit_entry_name: str
     s3_bucket_prefix_for_partitions: str
 

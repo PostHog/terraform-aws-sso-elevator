@@ -67,6 +67,12 @@ variable "cleanup_alert_slack_group" {
   default     = ""
 }
 
+variable "access_docs_url" {
+  description = "Optional URL to your access documentation. When set, a 'See the access docs' link is shown beside the permission-set/group dropdown in the request modals to help requesters pick the right one. Leave blank to hide the link."
+  type        = string
+  default     = ""
+}
+
 variable "schedule_expression" {
   description = "recovation schedule expression (will revoke all user-level assignments unknown to the Elevator)"
   type        = string

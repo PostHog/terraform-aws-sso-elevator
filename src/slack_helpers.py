@@ -59,6 +59,8 @@ class RequestForAccessView:
     PERMISSION_SET_BLOCK_ID = "select_permission_set"
     PERMISSION_SET_ACTION_ID = "selected_permission_set"
 
+    PERMISSION_SET_DOCS_HINT_BLOCK_ID = "permission_set_docs_hint"
+
     DURATION_BLOCK_ID = "duration_picker"
     DURATION_ACTION_ID = "duration_picker_action"
 
@@ -319,6 +321,7 @@ class RequestForAccessView:
             block_ids=[
                 cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
                 cls.PERMISSION_SET_BLOCK_ID,
+                cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID,
                 cls.PERMISSION_SET_LOADING_BLOCK_ID,
                 cls.APPROVERS_BLOCK_ID,
                 cls.APPROVERS_LOADING_BLOCK_ID,
@@ -361,27 +364,34 @@ class RequestForAccessView:
         auto_approved_arns: set[str] | None = None,
     ) -> View:
         view = cls._form_base()
-        # Start from the current blocks, remove placeholder
+        # Start from the current blocks, remove placeholder. The docs hint is removed too so a
+        # re-selected account rebuilds it exactly once (no duplicate).
         blocks = remove_blocks(
             view_blocks,
             block_ids=[
                 cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
                 cls.PERMISSION_SET_BLOCK_ID,
+                cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID,
                 cls.PERMISSION_SET_LOADING_BLOCK_ID,
                 cls.APPROVERS_BLOCK_ID,
                 cls.APPROVERS_LOADING_BLOCK_ID,
             ],
         )
-        # Insert permission set dropdown after account dropdown
+        # Insert permission set dropdown (and the docs hint, glued directly below it) after the
+        # account dropdown.
+        ps_blocks: list[Block] = [
+            cls.build_select_permission_set_input_block(
+                permission_sets,
+                display_names=display_names,
+                auto_approved_arns=auto_approved_arns,
+            )
+        ]
+        hint = build_docs_hint_block(cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID)
+        if hint:
+            ps_blocks.append(hint)
         blocks = insert_blocks(
             blocks=blocks,
-            blocks_to_insert=[
-                cls.build_select_permission_set_input_block(
-                    permission_sets,
-                    display_names=display_names,
-                    auto_approved_arns=auto_approved_arns,
-                )
-            ],
+            blocks_to_insert=ps_blocks,
             after_block_id=cls.LOAD_PS_BUTTON_BLOCK_ID,
         )
         view.blocks = blocks
@@ -408,7 +418,7 @@ class RequestForAccessView:
         blocks = insert_blocks(
             blocks=blocks,
             blocks_to_insert=[cls.build_approvers_loading_block()],
-            after_block_id=cls.PERMISSION_SET_BLOCK_ID,
+            after_block_id=docs_hint_anchor(blocks, cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID),
         )
         view.blocks = blocks
         return view
@@ -420,7 +430,7 @@ class RequestForAccessView:
         blocks = insert_blocks(
             blocks=blocks,
             blocks_to_insert=[cls.build_approvers_preview_block(text)],
-            after_block_id=cls.PERMISSION_SET_BLOCK_ID,
+            after_block_id=docs_hint_anchor(blocks, cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID),
         )
         view.blocks = blocks
         return view
@@ -551,6 +561,24 @@ def remove_blocks(blocks: list[T], block_ids: list[str]) -> list[T]:
 def insert_blocks(blocks: list[T], blocks_to_insert: list[Block], after_block_id: str) -> list[T]:
     index = next(i for i, block in enumerate(blocks) if get_block_id(block) == after_block_id)
     return blocks[: index + 1] + blocks_to_insert + blocks[index + 1 :]  # type: ignore
+
+
+def build_docs_hint_block(block_id: str) -> Optional[ContextBlock]:
+    """Small grey context line linking to access docs, shown beside the request dropdown. Returns
+    None when `access_docs_url` is unset so callers uniformly skip it (feature is opt-in)."""
+    if not cfg.access_docs_url:
+        return None
+    return ContextBlock(
+        block_id=block_id,
+        elements=[MarkdownTextObject(text=f":book: Unsure which role to pick? <{cfg.access_docs_url}|See the access docs>")],
+    )
+
+
+def docs_hint_anchor(blocks: list, hint_block_id: str, fallback_block_id: str) -> str:
+    """Block id to insert the approvers preview after: the docs-hint block when it is present (so
+    the preview lands below the hint), otherwise the dropdown itself. Guards against
+    `insert_blocks` raising when the hint is absent (e.g. `access_docs_url` unset)."""
+    return hint_block_id if any(get_block_id(block) == hint_block_id for block in blocks) else fallback_block_id
 
 
 def humanize_timedelta(td: timedelta) -> str:
@@ -1291,6 +1319,8 @@ class RequestForGroupAccessView:
     GROUP_BLOCK_ID = "select_group"
     GROUP_ACTION_ID = "selected_group"
 
+    GROUP_DOCS_HINT_BLOCK_ID = "group_docs_hint"
+
     DURATION_BLOCK_ID = "duration_picker"
     DURATION_ACTION_ID = "duration_picker_action"
 
@@ -1347,11 +1377,13 @@ class RequestForGroupAccessView:
     def update_with_groups(cls, groups: list[entities.aws.SSOGroup]) -> View:  # noqa: ANN102
         view = cls.build()
         view.blocks = remove_blocks(view.blocks, block_ids=[cls.LOADING_BLOCK_ID])
+        group_blocks: list[Block] = [cls.build_select_group_input_block(groups)]
+        hint = build_docs_hint_block(cls.GROUP_DOCS_HINT_BLOCK_ID)
+        if hint:
+            group_blocks.append(hint)
         view.blocks = insert_blocks(
             blocks=view.blocks,
-            blocks_to_insert=[
-                cls.build_select_group_input_block(groups),
-            ],
+            blocks_to_insert=group_blocks,
             after_block_id=cls.REASON_BLOCK_ID,
         )
         return view
@@ -1396,7 +1428,7 @@ class RequestForGroupAccessView:
         blocks = insert_blocks(
             blocks=blocks,
             blocks_to_insert=[cls.build_approvers_loading_block()],
-            after_block_id=cls.GROUP_BLOCK_ID,
+            after_block_id=docs_hint_anchor(blocks, cls.GROUP_DOCS_HINT_BLOCK_ID, cls.GROUP_BLOCK_ID),
         )
         view.blocks = blocks
         return view
@@ -1408,7 +1440,7 @@ class RequestForGroupAccessView:
         blocks = insert_blocks(
             blocks=blocks,
             blocks_to_insert=[cls.build_approvers_preview_block(text)],
-            after_block_id=cls.GROUP_BLOCK_ID,
+            after_block_id=docs_hint_anchor(blocks, cls.GROUP_DOCS_HINT_BLOCK_ID, cls.GROUP_BLOCK_ID),
         )
         view.blocks = blocks
         return view
