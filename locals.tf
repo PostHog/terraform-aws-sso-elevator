@@ -22,13 +22,20 @@ locals {
 
   # HTTP API configuration
   api_resource_path = "/access-requester"
-  api_stage_name    = "default"
-  full_api_url      = var.create_api_gateway ? "${module.http_api[0].stage_invoke_url}${local.api_resource_path}" : ""
+  # Non-Slack ingress for the secrets CLI (authenticated in-Lambda via a signed
+  # sts:GetCallerIdentity token, not by an IAM authorizer — see src/cli_handler.py).
+  cli_api_resource_path = "/cli-access-request"
+  api_stage_name        = "default"
+  full_api_url          = var.create_api_gateway ? "${module.http_api[0].stage_invoke_url}${local.api_resource_path}" : ""
 
   api_gateway_allowed_triggers = var.create_api_gateway ? {
     AllowExecutionFromAPIGateway = {
       service    = "apigateway"
       source_arn = "${module.http_api[0].api_execution_arn}/*/*${local.api_resource_path}"
+    }
+    AllowExecutionFromAPIGatewayCli = {
+      service    = "apigateway"
+      source_arn = "${module.http_api[0].api_execution_arn}/*/*${local.cli_api_resource_path}"
     }
   } : {}
 

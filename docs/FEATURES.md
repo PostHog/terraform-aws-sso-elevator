@@ -73,6 +73,16 @@ api_gateway_throttling_rate_limit = 1
 
 ---
 
+## CLI access requests (non-Slack ingress)
+
+A second route, `POST /cli-access-request`, lets tools such as the [`posthog/secrets`](https://github.com/PostHog/secrets) CLI request access without going through Slack. It runs the *same* decision/grant pipeline (`_process_single_access_request`), so eligibility, auto-approval, approval routing, auditing, and auto-revocation are identical — a request from the CLI shows up in the Slack channel exactly like a Slack-originated one.
+
+Because normal engineers hold no standing identity in the elevator's own AWS account, the route cannot use an IAM authorizer. Instead the caller proves its identity in-Lambda: it sends a SigV4-signed `sts:GetCallerIdentity` request (built from whatever member-account credentials it already has) as a token, and the Lambda replays it to STS to obtain the verified caller ARN, deriving the requester's email from the `AWSReservedSSO` role-session name (the "AWS IAM auth" pattern, as used by HashiCorp Vault). A signed `X-SSO-Elevator-Audience` header binds the token to this service so a token minted for another purpose can't be replayed here; tokens are also host-pinned to STS and rejected if older than 5 minutes. See `src/cli_handler.py`.
+
+The full URL is available in the `cli_access_request_url` output.
+
+---
+
 ## Request Expiration
 
 Requests can be configured to automatically expire after a set number of hours if not approved.

@@ -290,6 +290,16 @@ module "http_api" {
       throttling_burst_limit = var.api_gateway_throttling_burst_limit
       throttling_rate_limit  = var.api_gateway_throttling_rate_limit
     }
+    # Non-Slack ingress for the secrets CLI. Same Lambda; the handler dispatches on routeKey
+    # and authenticates the caller in-Lambda via a signed sts:GetCallerIdentity token.
+    "POST ${local.cli_api_resource_path}" : {
+      integration = {
+        uri  = local.requester_lambda_arn
+        type = "AWS_PROXY"
+      }
+      throttling_burst_limit = var.api_gateway_throttling_burst_limit
+      throttling_rate_limit  = var.api_gateway_throttling_rate_limit
+    }
   }
   stage_name         = local.api_stage_name
   create_domain_name = false

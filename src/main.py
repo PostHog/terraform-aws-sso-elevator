@@ -13,6 +13,7 @@ from slack_sdk.web.slack_response import SlackResponse
 
 import access_control
 import analytics
+import cli_handler
 import config
 import entities
 import event_publisher
@@ -46,6 +47,11 @@ app = App(
 def lambda_handler(event: str, context):  # noqa: ANN001, ANN201
     global cfg  # noqa: PLW0603
     cfg = config.check_and_refresh_config(s3_client)
+    # Non-Slack ingress: the secrets CLI posts signed access requests to a dedicated route.
+    # These carry no Slack signature, so they must be dispatched before the Slack Bolt handler
+    # (which would reject them for a missing/invalid signature).
+    if isinstance(event, dict) and event.get("routeKey") == cli_handler.ROUTE_KEY:
+        return cli_handler.handle(event, context)
     slack_handler = SlackRequestHandler(app=app)
     return slack_handler.handle(event, context)
 
@@ -503,8 +509,12 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
     user_group_ids: set[str],
     client: WebClient,
     is_user_in_channel: bool,
-) -> None:
-    """Process a single account access request (post approval message, make decision, etc.)."""
+) -> access_control.AccessRequestDecision:
+    """Process a single account access request (post approval message, make decision, etc.).
+
+    Returns the access decision so non-Slack callers (e.g. the CLI handler) can report the
+    outcome to the requester. The Slack submission handler ignores the return value.
+    """
     # Look up permission set to get ARN for matching against ARN-based config
     permission_set = sso.get_permission_set(sso_client, cfg.sso_instance_arn, request.permission_set_name)
 
@@ -679,7 +689,7 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
 
     if result.concurrent_operation:
         logger.info("Skipping follow-up — concurrent request already in progress")
-        return None  # type: ignore[return-value]
+        return decision
 
     if result.granted:
         analytics.capture(
@@ -729,6 +739,8 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
                 blocks=[slack_helpers.build_early_revoke_button(early_revoke_payload).to_dict()],
                 text="End session early",
             )
+
+    return decision
 
 
 @handle_errors

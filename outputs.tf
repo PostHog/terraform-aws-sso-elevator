@@ -8,6 +8,11 @@ output "requester_api_endpoint_url" {
   value       = var.create_api_gateway ? local.full_api_url : null
 }
 
+output "cli_access_request_url" {
+  description = "The full URL the secrets CLI posts signed access requests to (the non-Slack ingress)."
+  value       = var.create_api_gateway ? "${module.http_api[0].stage_invoke_url}${local.cli_api_resource_path}" : null
+}
+
 output "config_s3_bucket_name" {
   description = "The name of the S3 bucket for storing configuration and cache data."
   value       = module.config_bucket.s3_bucket_id
