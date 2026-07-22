@@ -541,3 +541,27 @@ def test_config_defaults_empty_account_sections_from_env():
     )
     cfg = config.Config(**config_dict)
     assert cfg.account_sections == []
+
+
+def test_error_channel_id_falls_back_to_slack_channel_id_when_unset():
+    """When slack_error_channel_id is unset, operator errors fall back to the main request channel."""
+    config_dict = valid_config_dict(
+        secondary_fallback_email_domains_as_json=False,
+        permission_duration_list_override_as_json=False,
+    )
+    config_dict["slack_channel_id"] = "C_MAIN"
+    cfg = config.Config(**config_dict)
+    assert cfg.slack_error_channel_id == ""
+    assert cfg.error_channel_id == "C_MAIN"
+
+
+def test_error_channel_id_uses_dedicated_channel_when_set():
+    """When slack_error_channel_id is set, error_channel_id returns it instead of the main channel."""
+    config_dict = valid_config_dict(
+        secondary_fallback_email_domains_as_json=False,
+        permission_duration_list_override_as_json=False,
+    )
+    config_dict["slack_channel_id"] = "C_MAIN"
+    config_dict["slack_error_channel_id"] = "C_ERR"
+    cfg = config.Config(**config_dict)
+    assert cfg.error_channel_id == "C_ERR"

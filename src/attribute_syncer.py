@@ -488,6 +488,8 @@ def lambda_handler(event: dict[str, Any], context: object) -> dict[str, Any]:  #
 
     # Get slack channel ID from environment
     slack_channel_id = os.environ.get("SLACK_CHANNEL_ID", "")
+    # Operator/system errors route to a separate channel when configured; empty falls back to the main channel.
+    slack_error_channel_id = os.environ.get("SLACK_ERROR_CHANNEL_ID", "") or slack_channel_id
 
     # Get audit bucket config from environment
     audit_bucket_name = os.environ.get("S3_BUCKET_FOR_AUDIT_ENTRY_NAME", "")
@@ -518,7 +520,7 @@ def lambda_handler(event: dict[str, Any], context: object) -> dict[str, Any]:  #
                     slack_client=slack_client,
                     error_message="\n".join(result.errors[:5]),
                     error_count=len(result.errors),
-                    channel_id=slack_channel_id,
+                    channel_id=slack_error_channel_id,
                 )
             notify_sync_summary(slack_client=slack_client, summary=result.to_summary(), channel_id=slack_channel_id)
         except Exception as e:

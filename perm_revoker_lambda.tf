@@ -47,10 +47,11 @@ module "access_revoker" {
     {
       LOG_LEVEL = var.log_level
 
-      SLACK_SIGNING_SECRET = var.slack_signing_secret
-      SLACK_BOT_TOKEN      = var.slack_bot_token
-      SLACK_CHANNEL_ID     = var.slack_channel_id
-      SCHEDULE_GROUP_NAME  = var.schedule_group_name
+      SLACK_SIGNING_SECRET   = var.slack_signing_secret
+      SLACK_BOT_TOKEN        = var.slack_bot_token
+      SLACK_CHANNEL_ID       = var.slack_channel_id
+      SLACK_ERROR_CHANNEL_ID = var.slack_error_channel_id
+      SCHEDULE_GROUP_NAME    = var.schedule_group_name
 
       SSO_INSTANCE_ARN            = local.sso_instance_arn
       IDENTITY_STORE_ID           = local.identity_store_id

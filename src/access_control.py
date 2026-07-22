@@ -403,7 +403,7 @@ def _rollback_account_grant_on_schedule_failure(  # noqa: PLR0913
         f"(approver <@{approver.id}>). Grant was {status}. Error: `{error}`."
     )
     try:
-        slack_client.chat_postMessage(channel=cfg.slack_channel_id, text=alert)
+        slack_client.chat_postMessage(channel=cfg.error_channel_id, text=alert)
     except Exception as slack_error:
         logger.exception("Failed to post schedule-failure alert to Slack", extra={"slack_error": str(slack_error)})
 
@@ -554,6 +554,6 @@ def _rollback_group_grant_on_schedule_failure(
         f"Membership was {status}. Error: `{error}`."
     )
     try:
-        slack_client.chat_postMessage(channel=cfg.slack_channel_id, text=alert)
+        slack_client.chat_postMessage(channel=cfg.error_channel_id, text=alert)
     except Exception as slack_error:
         logger.exception("Failed to post schedule-failure alert to Slack", extra={"slack_error": str(slack_error)})

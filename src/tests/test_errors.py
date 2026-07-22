@@ -50,6 +50,7 @@ class TestErrorHandlerText:
         context.get.side_effect = lambda key, default=None: "U_APPROVER" if key == "user_id" else default
         cfg = MagicMock()
         cfg.slack_channel_id = "C1"
+        cfg.error_channel_id = "C_ERR"
         logger = MagicMock()
 
         errors.error_handler(client=client, e=RuntimeError("boom"), logger=logger, context=context, cfg=cfg)
@@ -61,6 +62,21 @@ class TestErrorHandlerText:
         assert "Your request for AWS permissions" not in text
         assert "your request" not in text.lower()
 
+    def test_generic_error_posts_to_error_channel(self):
+        """Unexpected/operator-facing errors go to the dedicated error channel, not the busy
+        request channel."""
+        client = MagicMock()
+        context = MagicMock()
+        context.get.side_effect = lambda key, default=None: "U_APPROVER" if key == "user_id" else default
+        cfg = MagicMock()
+        cfg.slack_channel_id = "C1"
+        cfg.error_channel_id = "C_ERR"
+        logger = MagicMock()
+
+        errors.error_handler(client=client, e=RuntimeError("boom"), logger=logger, context=context, cfg=cfg)
+
+        assert client.chat_postMessage.call_args.kwargs["channel"] == "C_ERR"
+
     def test_sso_user_not_found_keeps_dedicated_requester_message(self):
         """SSOUserNotFound is requester-specific (the requester's email wasn't in SSO),
         so the more detailed 'your request failed because your user was not found' message
@@ -70,6 +86,7 @@ class TestErrorHandlerText:
         context.get.side_effect = lambda key, default=None: "U_REQUESTER" if key == "user_id" else default
         cfg = MagicMock()
         cfg.slack_channel_id = "C1"
+        cfg.error_channel_id = "C_ERR"
         logger = MagicMock()
 
         errors.error_handler(client=client, e=errors.SSOUserNotFound("no user"), logger=logger, context=context, cfg=cfg)
@@ -77,3 +94,18 @@ class TestErrorHandlerText:
         text = client.chat_postMessage.call_args.kwargs["text"]
         assert "<@U_REQUESTER>" in text
         assert "not found in AWS SSO" in text
+
+    def test_sso_user_not_found_stays_in_request_channel(self):
+        """Requester-facing 'user not found' feedback must stay in the main request channel so the
+        requester sees it, even though other errors are rerouted to the error channel."""
+        client = MagicMock()
+        context = MagicMock()
+        context.get.side_effect = lambda key, default=None: "U_REQUESTER" if key == "user_id" else default
+        cfg = MagicMock()
+        cfg.slack_channel_id = "C1"
+        cfg.error_channel_id = "C_ERR"
+        logger = MagicMock()
+
+        errors.error_handler(client=client, e=errors.SSOUserNotFound("no user"), logger=logger, context=context, cfg=cfg)
+
+        assert client.chat_postMessage.call_args.kwargs["channel"] == "C1"

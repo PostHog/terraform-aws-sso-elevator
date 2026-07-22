@@ -557,3 +557,31 @@ class TestBuildMappingRules:
             assert len(rule.conditions) == 1
             assert rule.conditions[0].attribute_name == attr_name
             assert rule.conditions[0].expected_value == attr_value
+
+
+class TestErrorChannelRouting:
+    """Sync errors route to SLACK_ERROR_CHANNEL_ID while the run summary stays on the main channel.
+    Uses distinct channels so the assertions are not vacuous under the conftest defaults."""
+
+    def test_sync_error_uses_error_channel_summary_uses_main(self, monkeypatch):
+        import attribute_syncer
+
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+        monkeypatch.setenv("IDENTITY_STORE_ID", "d-123")
+        monkeypatch.setenv("SLACK_CHANNEL_ID", "C_MAIN")
+        monkeypatch.setenv("SLACK_ERROR_CHANNEL_ID", "C_ERR")
+
+        fake_config = MagicMock(enabled=True)
+        fake_result = MagicMock(users_added=1, users_removed=0, manual_assignments_detected=0, errors=["boom"])
+
+        with (
+            patch("attribute_syncer.load_sync_config", return_value=fake_config),
+            patch("attribute_syncer.perform_sync", return_value=fake_result),
+            patch("attribute_syncer.WebClient"),
+            patch("attribute_syncer.notify_sync_error") as mock_error,
+            patch("attribute_syncer.notify_sync_summary") as mock_summary,
+        ):
+            attribute_syncer.lambda_handler({}, object())
+
+        assert mock_error.call_args.kwargs["channel_id"] == "C_ERR"
+        assert mock_summary.call_args.kwargs["channel_id"] == "C_MAIN"
