@@ -32,6 +32,8 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
 
 FROM public.ecr.aws/lambda/python:3.13
 
+RUN dnf upgrade -y glib2-2.82.2-770.amzn2023 --releasever=2023.12.20260720 && dnf clean all
+
 # Copy the runtime dependencies from the builder stage with proper ownership
 COPY --from=builder --chown=1000:1000 ${LAMBDA_TASK_ROOT} ${LAMBDA_TASK_ROOT}
 

@@ -2,6 +2,8 @@ FROM ghcr.io/astral-sh/uv:0.9.5 AS uv
 
 FROM public.ecr.aws/lambda/python:3.13
 
+RUN dnf upgrade -y glib2-2.82.2-770.amzn2023 --releasever=2023.12.20260720 && dnf clean all
+
 # Copy uv from the official image
 COPY --from=uv /uv /bin/uv
 
