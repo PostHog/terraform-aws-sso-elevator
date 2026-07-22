@@ -61,6 +61,12 @@ variable "slack_channel_id" {
   type        = string
 }
 
+variable "slack_error_channel_id" {
+  description = "Slack channel ID for operator/system error notifications (unexpected exceptions, rollback-failure alerts, attribute-sync errors). Leave blank to fall back to slack_channel_id."
+  type        = string
+  default     = ""
+}
+
 variable "cleanup_alert_slack_group" {
   description = "Slack usergroup ID (e.g. `S12345`, same format as `approver_groups` entries) to ping on rollback-failure alerts so an on-call admin is paged when SSO Elevator cannot auto-roll-back a grant whose scheduled revoke failed to create. Leave blank to post without a ping."
   type        = string

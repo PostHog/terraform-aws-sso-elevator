@@ -1878,3 +1878,27 @@ class TestConcurrentOperationHandling:
         assert result.concurrent_operation is True
         mock_schedule.assert_not_called()
         mock_audit.assert_not_called()
+
+
+def test_rollback_alert_posts_to_error_channel():
+    """The rollback-failure alert is an operator alert and must go to the dedicated error channel,
+    not the busy request channel. Uses a distinct error channel so the assertion isn't vacuous."""
+    from unittest.mock import PropertyMock
+
+    import config
+
+    with (
+        patch.object(access_control, "sso"),
+        patch.object(access_control, "slack_client") as mock_slack,
+        patch.object(config.Config, "error_channel_id", new_callable=PropertyMock, return_value="C_ERR"),
+    ):
+        access_control._rollback_account_grant_on_schedule_failure(
+            error=RuntimeError("boom"),
+            account_assignment=MagicMock(),
+            permission_set_name="AdminAccess",
+            account_id="111111111111",
+            requester=entities.slack.User(email="r@r", id="U_REQ", real_name="Requester"),
+            approver=entities.slack.User(email="a@a", id="U_APP", real_name="Approver"),
+        )
+
+    assert mock_slack.chat_postMessage.call_args.kwargs["channel"] == "C_ERR"

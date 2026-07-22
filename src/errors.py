@@ -56,16 +56,21 @@ def error_handler(client: WebClient, e: Exception, logger: Logger, context: Bolt
     )
 
     if isinstance(e, SSOUserNotFound):
+        # Requester-facing feedback: keep it in the main request channel so the requester sees
+        # why their request failed.
         text = (
             f"<@{user_id}> Your request for AWS permissions failed because your user was not found in AWS SSO. "
             "This often happens if you haven't yet been added to AWS, or if your AWS SSO email differs from your Slack email. "
             "Please check the SSO Elevator logs for more details."
         )
+        channel = cfg.slack_channel_id
     else:
         # The tagged user is whoever triggered the action (requester on submission, approver on
         # button click), so the message stays role-neutral instead of assuming "your request".
+        # This is an unexpected/operator-facing error, so route it to the error channel.
         text = f"<@{user_id}> Something went wrong handling this action. Check the SSO Elevator logs for details."
-    client.chat_postMessage(text=text, channel=cfg.slack_channel_id)
+        channel = cfg.error_channel_id
+    client.chat_postMessage(text=text, channel=channel)
 
 
 def handle_errors(fn):  # noqa: ANN001, ANN201

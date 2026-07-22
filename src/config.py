@@ -131,6 +131,9 @@ class Config(BaseSettings):
     post_update_to_slack: bool = False
     slack_channel_id: str
     slack_bot_token: str
+    # Optional separate channel for operator/system error notifications (unexpected exceptions,
+    # rollback-failure alerts, attribute-sync errors). Empty falls back to slack_channel_id.
+    slack_error_channel_id: str = ""
     # Optional Slack usergroup ID (e.g. `S12345`) prepended as a mention to
     # rollback-failure alerts so an admin is paged when a grant can't be auto-rolled-back.
     cleanup_alert_slack_group: str = ""
@@ -191,6 +194,11 @@ class Config(BaseSettings):
     timed_out_status: str = ":clock1: *TIMED OUT*"
     access_ended_status: str = ":checkered_flag: *SESSION COMPLETE*"
     superseded_status: str = ":arrows_counterclockwise: *SUPERSEDED*"
+
+    @property
+    def error_channel_id(self) -> str:
+        """Channel for operator/system error notifications; falls back to the main request channel."""
+        return self.slack_error_channel_id or self.slack_channel_id
 
     @model_validator(mode="before")
     @classmethod
