@@ -1,10 +1,7 @@
 name: Build and Push Docker Images
 
 on:
-  release:
-    types: [published]
   push:
-    tags: [v*]
     branches: [main]
 
 permissions:
@@ -39,22 +36,13 @@ jobs:
         id: get_sha
         run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
-      - name: Get tag name or SHA
-        id: get_tag
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "GIT_TAG=${GITHUB_REF##*/}" >> $GITHUB_ENV
-          else
-            echo "GIT_TAG=${{ env.SHORT_SHA }}" >> $GITHUB_ENV
-          fi
-    
       - name: Build and push requester image
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           file: src/docker/Dockerfile.requester
           push: true
-          tags: ${{ env.REGISTRY }}/aws-sso-elevator:requester-${{ env.GIT_TAG }}
+          tags: ${{ env.REGISTRY }}/aws-sso-elevator:requester-${{ env.SHORT_SHA }}
           provenance: false
 
       - name: Build and push revoker image
@@ -63,7 +51,7 @@ jobs:
           context: .
           file: src/docker/Dockerfile.revoker
           push: true
-          tags: ${{ env.REGISTRY }}/aws-sso-elevator:revoker-${{ env.GIT_TAG }}
+          tags: ${{ env.REGISTRY }}/aws-sso-elevator:revoker-${{ env.SHORT_SHA }}
           provenance: false
 
       - name: Build and push attribute syncer image
@@ -72,5 +60,5 @@ jobs:
           context: .
           file: src/docker/Dockerfile.attribute_syncer
           push: true
-          tags: ${{ env.REGISTRY }}/aws-sso-elevator:attribute-syncer-${{ env.GIT_TAG }}
+          tags: ${{ env.REGISTRY }}/aws-sso-elevator:attribute-syncer-${{ env.SHORT_SHA }}
           provenance: false
