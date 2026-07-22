@@ -231,6 +231,83 @@ class TestConcurrentScheduledGroupDeletion:
         mock_del.assert_not_called()
 
 
+class TestOrphanReverification:
+    """The inconsistency check reads the assignment snapshot and the scheduled-event
+    snapshot seconds apart. A grant or revoke that lands between the two reads makes a
+    perfectly-managed assignment momentarily look orphaned (the revoke deleted the
+    assignment + its schedule after the assignment snapshot but before/around the
+    schedule snapshot; a grant created the assignment + its schedule around the same
+    gap). Such a transient must be re-verified and dropped, not reported / alarmed on.
+    Regression test for the StaleGrantsDetected false-positive alarm.
+    """
+
+    @patch("revoker.schedule.get_scheduled_events", return_value=[])
+    @patch("revoker.sso.get_account_assignment_information")
+    def test_account_transient_orphan_dropped_on_reverification(self, mock_get_assignments, mock_get_scheduled):
+        x = _account_assignment("111111111111")
+        # First pass: assignment still present (snapshot predates the revoke), no live
+        # schedule (the concurrent revoke already deleted it) -> candidate orphan.
+        # Re-verification pass: the revoke has finished, the assignment is gone.
+        mock_get_assignments.side_effect = [[x], []]
+
+        result = revoker._list_orphan_account_assignments(
+            sso_client=MagicMock(), cfg=MagicMock(), org_client=MagicMock(), scheduler_client=MagicMock()
+        )
+
+        assert result == []
+        assert mock_get_assignments.call_count == 2  # candidate was re-verified
+
+    @patch("revoker.schedule.get_scheduled_events", return_value=[])
+    @patch("revoker.sso.get_account_assignment_information")
+    def test_account_persistent_orphan_is_reported(self, mock_get_assignments, mock_get_scheduled):
+        x = _account_assignment("111111111111")
+        mock_get_assignments.side_effect = [[x], [x]]  # still present on re-verification
+
+        result = revoker._list_orphan_account_assignments(
+            sso_client=MagicMock(), cfg=MagicMock(), org_client=MagicMock(), scheduler_client=MagicMock()
+        )
+
+        assert result == [x]
+
+    @patch("revoker.schedule.get_scheduled_events", return_value=[])
+    @patch("revoker.sso.get_account_assignment_information", return_value=[])
+    def test_account_no_candidates_skips_reverification(self, mock_get_assignments, mock_get_scheduled):
+        # Common case (no orphans): must not pay for a second full scan.
+        result = revoker._list_orphan_account_assignments(
+            sso_client=MagicMock(), cfg=MagicMock(), org_client=MagicMock(), scheduler_client=MagicMock()
+        )
+
+        assert result == []
+        assert mock_get_assignments.call_count == 1
+
+    @patch("revoker.sso.get_group_assignments")
+    @patch("revoker.schedule.get_scheduled_events", return_value=[])
+    @patch("revoker.sso.get_identity_store_id", return_value="d-1")
+    def test_group_transient_orphan_dropped_on_reverification(self, mock_idstore, mock_get_scheduled, mock_get_groups):
+        g = _group_assignment("g-1")
+        mock_get_groups.side_effect = [[g], []]
+
+        result = revoker._list_orphan_group_assignments(
+            identity_store_client=MagicMock(), sso_client=MagicMock(), scheduler_client=MagicMock(), cfg=MagicMock()
+        )
+
+        assert result == []
+        assert mock_get_groups.call_count == 2
+
+    @patch("revoker.sso.get_group_assignments")
+    @patch("revoker.schedule.get_scheduled_events", return_value=[])
+    @patch("revoker.sso.get_identity_store_id", return_value="d-1")
+    def test_group_persistent_orphan_is_reported(self, mock_idstore, mock_get_scheduled, mock_get_groups):
+        g = _group_assignment("g-1")
+        mock_get_groups.side_effect = [[g], [g]]
+
+        result = revoker._list_orphan_group_assignments(
+            identity_store_client=MagicMock(), sso_client=MagicMock(), scheduler_client=MagicMock(), cfg=MagicMock()
+        )
+
+        assert result == [g]
+
+
 class TestSchedulerSweepKeepsGoingOnError:
     """The daily revocation sweep must NOT abort just because one assignment hits a race
     condition — remaining assignments should still get processed."""

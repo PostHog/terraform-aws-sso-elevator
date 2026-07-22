@@ -820,6 +820,27 @@ def _list_orphan_account_assignments(
     org_client: OrganizationsClient,
     scheduler_client: EventBridgeSchedulerClient,
 ) -> list[sso.AccountAssignment]:
+    # The assignment snapshot and the scheduled-event snapshot are read seconds apart, so a
+    # grant or revoke that lands between the two reads can make a correctly-managed assignment
+    # look orphaned for a single check — e.g. a scheduled revocation deletes the assignment and
+    # its schedule right as this check runs, leaving the (older) assignment snapshot showing it
+    # while the (newer) schedule snapshot no longer does. Detect once, then re-verify any
+    # candidates against a fresh pair of snapshots and report only assignments still orphaned in
+    # both passes: a genuine orphan persists, a mid-flight grant/revoke does not. Skip the second
+    # pass entirely in the common (no-orphan) case.
+    candidates = _detect_orphan_account_assignments(sso_client, cfg, org_client, scheduler_client)
+    if not candidates:
+        return []
+    reverified = _detect_orphan_account_assignments(sso_client, cfg, org_client, scheduler_client)
+    return [a for a in candidates if a in reverified]
+
+
+def _detect_orphan_account_assignments(
+    sso_client: SSOAdminClient,
+    cfg: config.Config,
+    org_client: OrganizationsClient,
+    scheduler_client: EventBridgeSchedulerClient,
+) -> list[sso.AccountAssignment]:
     account_assignments = sso.get_account_assignment_information(sso_client, cfg, org_client)
     scheduled_revoke_events = schedule.get_scheduled_events(scheduler_client)
     account_assignments_from_events = [
@@ -885,6 +906,23 @@ def handle_check_on_inconsistency(  # noqa: PLR0913
 
 
 def _list_orphan_group_assignments(
+    identity_store_client: IdentityStoreClient,
+    sso_client: SSOAdminClient,
+    scheduler_client: EventBridgeSchedulerClient,
+    cfg: config.Config,
+) -> list[sso.GroupAssignment]:
+    # Same snapshot race as _list_orphan_account_assignments (see that function): a grant/revoke
+    # landing between the schedule read and the membership read can momentarily look orphaned.
+    # Detect once, then re-verify candidates against a fresh pair of snapshots and keep only
+    # memberships still orphaned in both passes.
+    candidates = _detect_orphan_group_assignments(identity_store_client, sso_client, scheduler_client, cfg)
+    if not candidates:
+        return []
+    reverified = _detect_orphan_group_assignments(identity_store_client, sso_client, scheduler_client, cfg)
+    return [g for g in candidates if g in reverified]
+
+
+def _detect_orphan_group_assignments(
     identity_store_client: IdentityStoreClient,
     sso_client: SSOAdminClient,
     scheduler_client: EventBridgeSchedulerClient,
