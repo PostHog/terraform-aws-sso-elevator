@@ -810,16 +810,6 @@ def get_user_by_email(client: WebClient, email: str) -> entities.slack.User:
         raise e
 
 
-def remove_buttons_from_message_blocks(
-    slack_message_blocks: list[Block],
-    action: entities.ApproverAction,
-    approver: entities.slack.User,
-) -> list[Block]:
-    blocks = remove_blocks(slack_message_blocks, block_ids=["buttons"])
-    blocks.append(button_click_info_block(action, approver.id))
-    return blocks
-
-
 def create_slack_mention_by_principal_id(
     sso_user_id: str,
     sso_client: SSOAdminClient,
