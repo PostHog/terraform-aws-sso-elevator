@@ -269,7 +269,7 @@ cache_for_dublicate_requests = {}
 
 
 @handle_errors
-def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> SlackResponse:  # noqa: ARG001, PLR0911, PLR0915
+def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> SlackResponse:  # noqa: ARG001, PLR0911, PLR0912, PLR0915
     logger.info("Handling button click")
     try:
         payload = slack_helpers.ButtonClickedPayload.model_validate(body)
@@ -278,6 +278,17 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
         return group.handle_group_button_click(body, client, context)
 
     logger.info("Button click payload", extra={"payload": payload})
+
+    # Stale buttons stay clickable in other people's clients after the winning approver's update
+    # removes them, so a click can arrive for a request that is already settled.
+    if already_handled := slack_helpers.request_already_handled_text(payload.message):
+        logger.info("Ignoring click on an already-handled request", extra={"thread_ts": payload.thread_ts})
+        return client.chat_postMessage(
+            channel=payload.channel_id,
+            thread_ts=payload.thread_ts,
+            text=f"<@{payload.approver_slack_id}> {already_handled}",
+        )
+
     # Approver might be from different Slack workspace, if so, get_user will fail.
     try:
         approver = slack_helpers.get_user(client, id=payload.approver_slack_id)
