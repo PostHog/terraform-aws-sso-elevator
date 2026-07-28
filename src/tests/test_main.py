@@ -928,7 +928,9 @@ class TestDenyAuthorization:
             approver_slack_id=clicker_slack_id,
             thread_ts="123.456",
             channel_id="C12345",
-            message={"blocks": []},
+            # A pending request still carries its "buttons" block — without it the handler
+            # correctly treats the request as already handled.
+            message={"blocks": [{"block_id": "buttons"}]},
             request=slack_helpers.RequestForAccess(
                 permission_set_name="TestPermissionSet",
                 account_id="111111111111",
@@ -1711,3 +1713,101 @@ class TestAcknowledgeRequestForAccess:
         main.acknowledge_request_for_access(ack, self._submission(with_permission_set=True, with_duration=False))
         assert ack.call_args.kwargs.get("response_action") == "errors"
         assert slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID in ack.call_args.kwargs.get("errors", {})
+
+
+class TestAlreadyHandledRequest:
+    """A click on a request whose `buttons` block is already gone — another approver won the
+    race, or the revoker expired it — must leave the message alone.
+
+    Previously the handler appended a second `block_id="footer"` to blocks that already carried
+    one, and Slack rejects duplicate block_ids with `invalid_blocks`. The clicker got a generic
+    "Something went wrong handling this action" instead of being told what happened.
+    """
+
+    REQUESTER_ID = "U_REQUESTER"
+    CLICKER_ID = "U_LATE_APPROVER"
+    WINNER_ID = "U_WINNER"
+
+    # Blocks as they look after another approver's update: buttons swapped for a footer.
+    HANDLED_BLOCKS = [
+        {"block_id": "header"},
+        {"block_id": "content"},
+        {"block_id": "footer", "text": {"type": "mrkdwn", "text": f"<@{WINNER_ID}> pressed approve button"}},
+    ]
+
+    def _payload(self, action):
+        import slack_helpers
+
+        return slack_helpers.ButtonClickedPayload.model_construct(
+            action=action,
+            approver_slack_id=self.CLICKER_ID,
+            thread_ts="123.456",
+            channel_id="C12345",
+            message={"blocks": self.HANDLED_BLOCKS},
+            request=slack_helpers.RequestForAccess(
+                permission_set_name="TestPermissionSet",
+                account_id="111111111111",
+                reason="Testing",
+                requester_slack_id=self.REQUESTER_ID,
+                permission_duration=timedelta(hours=1),
+            ),
+        )
+
+    def _user(self, user_id: str):
+        return entities.slack.User(id=user_id, email=f"{user_id}@test.com", real_name=user_id)
+
+    def _run(self, main_module, action):
+        import access_control
+        import slack_helpers
+
+        mock_client = MagicMock()
+        with (
+            patch.object(slack_helpers.ButtonClickedPayload, "model_validate", return_value=self._payload(action)),
+            patch.object(main_module.slack_helpers, "get_user", side_effect=lambda _client, id: self._user(id)),
+            patch.object(main_module.slack_helpers, "check_if_user_is_in_channel", return_value=True),
+            patch.object(
+                main_module.sso,
+                "get_permission_set",
+                return_value=entities.aws.PermissionSet(name="TestPermissionSet", arn="arn:sso:ps/test", description=None),
+            ),
+            # The clicker IS a legitimate approver — the request being already handled is the
+            # only reason to stop, so authorization must not be what makes this test pass.
+            patch.object(
+                main_module.access_control,
+                "make_decision_on_approve_request",
+                return_value=access_control.ApproveRequestDecision(
+                    grant=True,
+                    permit=True,
+                    based_on_statements=frozenset(),
+                ),
+            ),
+            patch.object(main_module.analytics, "capture"),
+            patch.object(main_module.access_control, "execute_decision") as execute_decision,
+        ):
+            main_module.handle_button_click.__wrapped__(body={"foo": "bar"}, client=mock_client, context=MagicMock())
+        main_module.cache_for_dublicate_requests.clear()
+        return mock_client, execute_decision
+
+    @pytest.mark.parametrize("action", [entities.ApproverAction.Approve, entities.ApproverAction.Deny])
+    def test_does_not_update_message(self, import_main, action):
+        mock_client, _ = self._run(import_main, action)
+        assert mock_client.chat_update.call_count == 0
+
+    @pytest.mark.parametrize("action", [entities.ApproverAction.Approve, entities.ApproverAction.Deny])
+    def test_tells_clicker_it_was_already_handled(self, import_main, action):
+        mock_client, _ = self._run(import_main, action)
+        texts = [c.kwargs.get("text", "") for c in mock_client.chat_postMessage.call_args_list]
+        assert any("already been handled" in t for t in texts)
+        # The reply belongs in the request thread, not the channel root.
+        assert all(c.kwargs.get("thread_ts") == "123.456" for c in mock_client.chat_postMessage.call_args_list)
+
+    def test_names_the_approver_who_handled_it(self, import_main):
+        mock_client, _ = self._run(import_main, entities.ApproverAction.Approve)
+        texts = [c.kwargs.get("text", "") for c in mock_client.chat_postMessage.call_args_list]
+        assert any(f"<@{self.WINNER_ID}> pressed approve button" in t for t in texts)
+
+    def test_grants_nothing(self, import_main):
+        # Approve only — the Deny branch never reaches execute_decision, so parametrizing it
+        # would add a test that cannot fail.
+        _, execute_decision = self._run(import_main, entities.ApproverAction.Approve)
+        execute_decision.assert_not_called()

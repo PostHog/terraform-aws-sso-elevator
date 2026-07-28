@@ -558,9 +558,28 @@ def remove_blocks(blocks: list[T], block_ids: list[str]) -> list[T]:
     return [block for block in blocks if get_block_id(block) not in block_ids]
 
 
+def find_block(blocks: list[Union[Block, dict]], block_id: str) -> Optional[Union[Block, dict]]:
+    return next((block for block in blocks if get_block_id(block) == block_id), None)
+
+
 def insert_blocks(blocks: list[T], blocks_to_insert: list[Block], after_block_id: str) -> list[T]:
     index = next(i for i, block in enumerate(blocks) if get_block_id(block) == after_block_id)
     return blocks[: index + 1] + blocks_to_insert + blocks[index + 1 :]  # type: ignore
+
+
+def request_already_handled_text(message: dict) -> Optional[str]:
+    """Explanation to reply with when a request is no longer actionable, or None if it still is.
+
+    A "buttons" block is only ever created when the request is first posted, and every path that
+    removes it appends a "footer" block naming the outcome. So a missing "buttons" block means the
+    request was already approved, denied, or expired — and appending another "footer" would make
+    Slack reject the `chat_update` as a duplicate block_id.
+    """
+    blocks = message.get("blocks", [])
+    if find_block(blocks, "buttons") is not None:
+        return None
+    outcome = jp.search("text.text", find_block(blocks, "footer"))
+    return f"This request has already been handled: {outcome}" if outcome else "This request has already been handled."
 
 
 def build_docs_hint_block(block_id: str) -> Optional[ContextBlock]:
@@ -789,16 +808,6 @@ def get_user_by_email(client: WebClient, email: str) -> entities.slack.User:
             raise e
     except Exception as e:
         raise e
-
-
-def remove_buttons_from_message_blocks(
-    slack_message_blocks: list[Block],
-    action: entities.ApproverAction,
-    approver: entities.slack.User,
-) -> list[Block]:
-    blocks = remove_blocks(slack_message_blocks, block_ids=["buttons"])
-    blocks.append(button_click_info_block(action, approver.id))
-    return blocks
 
 
 def create_slack_mention_by_principal_id(

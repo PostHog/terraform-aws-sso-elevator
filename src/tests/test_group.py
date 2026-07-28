@@ -222,7 +222,9 @@ class TestDenyAuthorizationGroup:
             approver_slack_id=clicker_slack_id,
             thread_ts="123.456",
             channel_id="C12345",
-            message={"blocks": []},
+            # A pending request still carries its "buttons" block — without it the handler
+            # correctly treats the request as already handled.
+            message={"blocks": [{"block_id": "buttons"}]},
             request=slack_helpers.RequestForGroupAccess(
                 group_id=self.GROUP_ID,
                 reason="Testing",
@@ -448,3 +450,79 @@ class TestHandleGroupSelection:
                         texts.append(text)
                 return " ".join(texts)
         return ""
+
+
+class TestAlreadyHandledGroupRequest:
+    """Mirrors TestAlreadyHandledRequest in test_main.py for the group-access flow."""
+
+    REQUESTER_ID = "U_REQUESTER"
+    CLICKER_ID = "U_LATE_APPROVER"
+    WINNER_ID = "U_WINNER"
+    GROUP_ID = "11111111-2222-3333-4444-555555555555"
+
+    HANDLED_BLOCKS = [
+        {"block_id": "header"},
+        {"block_id": "content"},
+        {"block_id": "footer", "text": {"type": "mrkdwn", "text": f"<@{WINNER_ID}> pressed approve button"}},
+    ]
+
+    def _payload(self, action):
+        import slack_helpers
+
+        return slack_helpers.ButtonGroupClickedPayload.model_construct(
+            action=action,
+            approver_slack_id=self.CLICKER_ID,
+            thread_ts="123.456",
+            channel_id="C12345",
+            message={"blocks": self.HANDLED_BLOCKS},
+            request=slack_helpers.RequestForGroupAccess(
+                group_id=self.GROUP_ID,
+                reason="Testing",
+                requester_slack_id=self.REQUESTER_ID,
+                permission_duration=timedelta(hours=1),
+            ),
+        )
+
+    def _run(self, group_module, action):
+        import access_control
+        import slack_helpers
+
+        mock_client = MagicMock()
+        with (
+            patch.object(slack_helpers.ButtonGroupClickedPayload, "model_validate", return_value=self._payload(action)),
+            patch.object(
+                group_module.slack_helpers,
+                "get_user",
+                side_effect=lambda _client, id: entities.slack.User(id=id, email=f"{id}@test.com", real_name=id),
+            ),
+            patch.object(group_module.slack_helpers, "check_if_user_is_in_channel", return_value=True),
+            # The clicker IS a legitimate approver — being already handled is the only reason to stop.
+            patch.object(
+                group_module.access_control,
+                "make_decision_on_approve_request",
+                return_value=access_control.ApproveRequestDecision(
+                    grant=True,
+                    permit=True,
+                    based_on_statements=frozenset(),
+                ),
+            ),
+            patch.object(group_module.access_control, "execute_decision_on_group_request") as execute_decision,
+        ):
+            group_module.handle_group_button_click.__wrapped__(body={"foo": "bar"}, client=mock_client, context=MagicMock())
+        group_module.cache_for_dublicate_requests.clear()
+        return mock_client, execute_decision
+
+    @pytest.mark.parametrize("action", [entities.ApproverAction.Approve, entities.ApproverAction.Deny])
+    def test_does_not_update_message(self, import_group, action):
+        mock_client, _ = self._run(import_group, action)
+        assert mock_client.chat_update.call_count == 0
+
+    @pytest.mark.parametrize("action", [entities.ApproverAction.Approve, entities.ApproverAction.Deny])
+    def test_tells_clicker_it_was_already_handled(self, import_group, action):
+        mock_client, _ = self._run(import_group, action)
+        texts = [c.kwargs.get("text", "") for c in mock_client.chat_postMessage.call_args_list]
+        assert any("already been handled" in t for t in texts)
+
+    def test_grants_nothing(self, import_group):
+        _, execute_decision = self._run(import_group, entities.ApproverAction.Approve)
+        execute_decision.assert_not_called()
