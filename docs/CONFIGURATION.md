@@ -184,3 +184,40 @@ Behavior:
   `terraform plan` time.
 
 Leave `account_sections` empty (`[]`, the default) to keep the flat list.
+
+## Hints for Specific Permission Sets (`permission_set_hints`)
+
+Some roles are requested more often than they need to be — there is a self-service tool
+that covers the common case, or a runbook that should be read first. `permission_set_hints`
+attaches a note to a specific permission set, so the requester sees it at the moment they
+pick that role.
+
+Like `account_sections`, this is a top-level module input rather than a statement field. It
+does not affect access decisions — a hint is informational and never blocks, gates, or
+delays a request.
+
+```hcl
+permission_set_hints = {
+  "secrets-editor" = ":bulb: Most secret changes don't need this role — read and edit directly in <https://secrets.example.com|the secrets UI>."
+  "prod-admin"     = ":warning: Check <https://wiki.example.com/prod-admin|the runbook> before requesting."
+}
+```
+
+Behavior:
+
+- **Keys** are permission set names *or* ARNs, matching however you write them in `config`
+  statements. If both match, the name wins.
+- **Values** are Slack mrkdwn, rendered verbatim. Links use Slack's `<URL|label>` syntax,
+  and emoji use `:shortcode:` form. Nothing is prepended, so the wording is entirely yours.
+- **Shown twice**: as a grey context line under the permission set dropdown as soon as the
+  role is selected, and as a reply in the request's Slack thread after submission.
+- **Unmapped permission sets** show no hint. Leave `permission_set_hints` empty (`{}`, the
+  default) to disable the feature.
+- **Limit**: hints are truncated to 3000 characters (Slack's context block limit).
+
+This is independent of `access_docs_url`, which shows one general "See the access docs"
+link for *every* permission set. When both are set, both appear: the general link first,
+then the role-specific hint.
+
+Changing hint text takes effect without redeploying the Lambda — the hints travel in the
+S3 config object, which is re-read when it changes.

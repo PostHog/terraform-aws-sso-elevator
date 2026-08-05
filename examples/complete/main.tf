@@ -143,4 +143,13 @@ module "aws_sso_elevator" {
     { name = "Production", accounts = ["111111111111", "222222222222"] },
     { name = "Sandbox", accounts = ["333333333333"] },
   ]
+
+  # Optional: attach a note to a specific permission set, shown under the dropdown when that
+  # role is selected and again as a reply in the request's Slack thread. Keys are permission
+  # set names or ARNs (name wins if both match); values are Slack mrkdwn, rendered verbatim.
+  # Purely informational -- a hint never blocks or gates a request. Leave unset to disable.
+  permission_set_hints = {
+    "ReadOnlyAccess"      = ":bulb: Read-only access is auto-approved -- no need to wait for a reviewer."
+    "AdministratorAccess" = ":warning: Check <https://example.com/runbooks/prod-admin|the runbook> before requesting."
+  }
 }
