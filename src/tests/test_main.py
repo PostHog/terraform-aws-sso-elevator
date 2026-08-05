@@ -1878,6 +1878,9 @@ class TestPermissionSetHintInModal:
         main = import_main
         main.user_view_map.clear()
         self._seed_user_cache(main)
+        # The shape the stash exists for: config keyed by *name*, stash keyed by ARN. Without the
+        # stash the loading pass has only the ARN and would miss this hint until the final update.
+        main.cfg.permission_set_hints = {"secrets-editor": self.HINT}
         main.user_view_map[f"{self.VIEW_KEY}:permission_set_hints_by_arn"] = {self.PS_ARN: self.HINT}
         mock_client = self._mock_client()
 
@@ -1915,21 +1918,21 @@ class TestPermissionSetHintInModal:
         assert loading_blocks == []
         assert final_blocks[0].elements[0].text == self.HINT
 
-    def test_empty_stash_is_authoritative_not_treated_as_missing(self, import_main):
-        """An empty stash means "none of these permission sets has a hint", which is different from
-        no stash at all. The guard is `is not None` for that reason; a truthiness check would fall
-        through to the degraded ARN lookup and re-derive a hint the dropdown pass already ruled out.
-        """
+    def test_stale_stash_falls_through_to_the_config_lookup(self, import_main):
+        """The stash is keyed per user and never evicted, so a warm container can hold one built for
+        a different account selection (or a different modal) that lacks this ARN. Treating that miss
+        as "no hint" would silently drop a configured hint, so it must fall through to the config."""
         main = import_main
         main.user_view_map.clear()
         self._seed_user_cache(main)
-        main.user_view_map[f"{self.VIEW_KEY}:permission_set_hints_by_arn"] = {}
+        # Stash from an earlier modal: non-empty, but missing the ARN now being selected.
+        main.user_view_map[f"{self.VIEW_KEY}:permission_set_hints_by_arn"] = {"arn:aws:sso:::permissionSet/other": "old hint"}
         main.cfg.permission_set_hints = {self.PS_ARN: self.HINT}
         mock_client = self._mock_client()
 
         self._run_selection(main, mock_client)
 
-        assert all(blocks == [] for blocks in self._hint_blocks(mock_client))
+        assert all(blocks[0].elements[0].text == self.HINT for blocks in self._hint_blocks(mock_client))
 
     def test_arn_keyed_hint_renders_immediately_without_the_stash(self, import_main):
         main = import_main

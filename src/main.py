@@ -1123,17 +1123,15 @@ def _handle_permission_set_selection_impl(body: dict, client: WebClient) -> Slac
     view_key = f"{user_id}:{callback_id}"
 
     # Look up the hint before the first view update, so it renders even on the paths that bail
-    # below (stale view hash, unknown ARN, or the caller's blanket except). The stash was built by
-    # `handle_load_permission_sets`, so this costs no AWS call and matches name- and ARN-keyed
-    # entries alike. It is absent only if the container recycled between the two interactions; the
-    # `hints_by_arn is None` fallback below covers that.
-    hints_by_arn = user_view_map.get(f"{view_key}:permission_set_hints_by_arn")
-    hint_text = (
-        hints_by_arn.get(permission_set_arn)
-        if hints_by_arn is not None
-        # Degraded path: only the ARN is known here, so an ARN-keyed hint still renders now and a
-        # name-keyed one is picked up below once the permission set is resolved.
-        else slack_helpers.resolve_permission_set_hint_by_arn(permission_set_arn, cfg.permission_set_hints)
+    # below (stale view hash, unknown ARN, or the caller's blanket except).
+    #
+    # The stash from `handle_load_permission_sets` is an optimization, never an authority. It is
+    # keyed per user and never evicted, so a warm container can hold one built for a different
+    # account selection — or a different modal entirely — that simply lacks this ARN. A miss
+    # therefore falls through to the ARN-only config lookup instead of being read as "no hint".
+    hints_by_arn = user_view_map.get(f"{view_key}:permission_set_hints_by_arn") or {}
+    hint_text = hints_by_arn.get(permission_set_arn) or slack_helpers.resolve_permission_set_hint_by_arn(
+        permission_set_arn, cfg.permission_set_hints
     )
 
     loading_response = safe_views_update(
@@ -1151,10 +1149,11 @@ def _handle_permission_set_selection_impl(body: dict, client: WebClient) -> Slac
         logger.warning(f"Permission set ARN not found in config: {permission_set_arn}")
         return None
 
-    if hints_by_arn is None:
-        # Stash was missing; now that the permission set is resolved, redo the lookup with the full
-        # name-or-ARN match so a name-keyed hint is not lost.
-        hint_text = slack_helpers.resolve_permission_set_hint(ps, cfg.permission_set_hints)
+    # Redo the lookup unconditionally now that the permission set is resolved: this is the full
+    # name-or-ARN match against the current config, so a name-keyed hint lands even when the stash
+    # was absent or stale. Worst case such a hint arrives with the approvers preview rather than the
+    # loading spinner — it is never silently dropped.
+    hint_text = slack_helpers.resolve_permission_set_hint(ps, cfg.permission_set_hints)
 
     resolver_cache: dict[frozenset[str], set[str]] = {}
 
