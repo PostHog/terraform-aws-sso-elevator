@@ -166,6 +166,11 @@ class Config(BaseSettings):
     # beside the permission-set/group dropdown in the request modals. Empty = no link shown.
     access_docs_url: str = ""
 
+    # Optional URL to a self-service secrets UI. When set, a `secrets-editor` request gets a reply
+    # in its thread pointing at the UI, since most secret edits don't need the AWS role at all.
+    # Empty = no reply posted.
+    secrets_ui_url: str = ""
+
     s3_bucket_for_audit_entry_name: str
     s3_bucket_prefix_for_partitions: str
 

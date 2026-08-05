@@ -906,6 +906,125 @@ class TestShowButtonsForApproverGroups:
                 p.stop()
 
 
+class TestSecretsUiHintPostedInThread:
+    """`secrets-editor` requesters get pointed at the self-service secrets UI, as a reply in the
+    request thread so it reaches the requester without touching the approval message itself."""
+
+    SECRETS_UI_URL = "https://secrets-ui.example.ts.net/"
+
+    def _build_request(self):
+        import slack_helpers
+
+        return slack_helpers.RequestForAccess(
+            permission_set_name="secrets-editor",
+            account_id="111111111111",
+            reason="Rotating a token",
+            requester_slack_id="U_REQUESTER",
+            permission_duration=timedelta(hours=1),
+        )
+
+    def _setup_patches(self, main_module, permission_set_name, secrets_ui_url):
+        import access_control
+
+        return [
+            patch.object(
+                main_module.access_control,
+                "make_decision_on_access_request",
+                return_value=access_control.AccessRequestDecision(
+                    grant=False,
+                    reason=access_control.DecisionReason.RequiresApproval,
+                    based_on_statements=frozenset(),
+                    approvers=frozenset(["approver@test.com"]),
+                    approver_groups=frozenset(),
+                ),
+            ),
+            patch.object(
+                main_module.access_control,
+                "execute_decision",
+                return_value=access_control.ExecuteDecisionResult(granted=False),
+            ),
+            patch.object(
+                main_module.sso,
+                "get_permission_set",
+                return_value=entities.aws.PermissionSet(name=permission_set_name, arn="arn:sso:ps/test", description=None),
+            ),
+            patch.object(main_module.sso, "get_identity_store_id", return_value="d-123456"),
+            patch.object(main_module.sso, "get_user_principal_id_by_email", return_value=("principal-id", None)),
+            patch.object(
+                main_module.organizations,
+                "describe_account",
+                side_effect=lambda _c, account_id: entities.aws.Account(id=account_id, name=f"Account-{account_id}"),
+            ),
+            patch.object(main_module.slack_helpers, "build_approval_request_message_blocks", return_value=[]),
+            patch.object(main_module.slack_helpers, "check_if_user_is_in_channel", return_value=True),
+            patch.object(
+                main_module.slack_helpers,
+                "get_user",
+                return_value=entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester"),
+            ),
+            patch.object(
+                main_module.slack_helpers,
+                "find_approvers_in_slack",
+                return_value=([entities.slack.User(id="U_APPROVER", email="approver@test.com", real_name="Approver")], []),
+            ),
+            patch.object(main_module.slack_helpers, "build_approver_group_mentions", return_value=""),
+            # The hint helper reads the URL off its own module-level config singleton.
+            patch.object(
+                main_module.slack_helpers,
+                "cfg",
+                main_module.slack_helpers.cfg.model_copy(update={"secrets_ui_url": secrets_ui_url}),
+            ),
+            patch.object(main_module.analytics, "capture"),
+            patch.object(main_module.schedule, "schedule_discard_buttons_event"),
+            patch.object(main_module.schedule, "schedule_approver_notification_event"),
+        ]
+
+    def _run(self, main_module, permission_set_name="secrets-editor", secrets_ui_url=SECRETS_UI_URL):
+        mock_client = MagicMock()
+        mock_client.chat_postMessage.return_value = {"ts": "123.456", "message": {"blocks": []}}
+        patches = self._setup_patches(main_module, permission_set_name, secrets_ui_url)
+        for p in patches:
+            p.start()
+        try:
+            main_module._process_single_access_request(
+                request=self._build_request(),
+                requester=entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester"),
+                user_group_ids=set(),
+                client=mock_client,
+                is_user_in_channel=True,
+            )
+        finally:
+            for p in patches:
+                p.stop()
+        return mock_client
+
+    def _hint_calls(self, mock_client):
+        return [c for c in mock_client.chat_postMessage.call_args_list if self.SECRETS_UI_URL in c.kwargs.get("text", "")]
+
+    def test_hint_posted_in_request_thread(self, import_main):
+        mock_client = self._run(import_main)
+        hints = self._hint_calls(mock_client)
+        assert len(hints) == 1
+        # A reply, not a second top-level channel message.
+        assert hints[0].kwargs["thread_ts"] == "123.456"
+        assert hints[0].kwargs["channel"] == import_main.cfg.slack_channel_id
+
+    def test_hint_absent_for_other_permission_sets(self, import_main):
+        mock_client = self._run(import_main, permission_set_name="AdministratorAccess")
+        assert self._hint_calls(mock_client) == []
+
+    def test_hint_absent_when_url_unset(self, import_main):
+        mock_client = self._run(import_main, secrets_ui_url="")
+        texts = [c.kwargs.get("text", "") for c in mock_client.chat_postMessage.call_args_list]
+        assert not any("secrets UI" in t for t in texts)
+
+    def test_request_still_proceeds_to_approval(self, import_main):
+        """The hint is a nudge, not a gate — the request must still go for approval."""
+        mock_client = self._run(import_main)
+        texts = [c.kwargs.get("text", "") for c in mock_client.chat_postMessage.call_args_list]
+        assert any("awaiting approval" in t for t in texts)
+
+
 class TestDenyAuthorization:
     """Deny must be authorized. Historically the Deny branch ran without any
     authorization check — any channel member could deny anyone's request.

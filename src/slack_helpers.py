@@ -593,6 +593,21 @@ def build_docs_hint_block(block_id: str) -> Optional[ContextBlock]:
     )
 
 
+SECRETS_EDITOR_PERMISSION_SET_NAME = "secrets-editor"
+
+
+def build_secrets_ui_hint(permission_set_name: str) -> Optional[str]:
+    """Thread reply nudging `secrets-editor` requesters toward the self-service secrets UI, which
+    covers routine secret reads and edits without an AWS grant. Returns None for any other
+    permission set, or when `secrets_ui_url` is unset, so callers uniformly skip the post."""
+    if permission_set_name != SECRETS_EDITOR_PERMISSION_SET_NAME or not cfg.secrets_ui_url:
+        return None
+    return (
+        ":lock: Heads up: most secret changes don't need this role — you can read and edit secrets "
+        f"directly in <{cfg.secrets_ui_url}|the secrets UI>. Carry on if you need raw AWS access."
+    )
+
+
 def docs_hint_anchor(blocks: list, hint_block_id: str, fallback_block_id: str) -> str:
     """Block id to insert the approvers preview after: the docs-hint block when it is present (so
     the preview lands below the hint), otherwise the dropdown itself. Guards against

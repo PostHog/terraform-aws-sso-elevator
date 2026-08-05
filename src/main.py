@@ -581,6 +581,10 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
         text=f"Request for access to {account.name} account from {requester.real_name}",
     )
 
+    secrets_ui_hint = slack_helpers.build_secrets_ui_hint(permission_set.name)
+    if secrets_ui_hint:
+        client.chat_postMessage(text=secrets_ui_hint, thread_ts=slack_response["ts"], channel=cfg.slack_channel_id)
+
     if show_buttons:
         ts = slack_response["ts"]
         if ts is not None:

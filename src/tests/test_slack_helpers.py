@@ -1414,6 +1414,35 @@ class TestAccountDocsHint:
         )
 
 
+SECRETS_UI_URL = "https://secrets-ui.example.ts.net/"
+
+
+class TestBuildSecretsUiHint:
+    """Thread-reply nudge steering `secrets-editor` requesters to the self-service secrets UI."""
+
+    def _patch_url(self, monkeypatch, url: str) -> None:  # noqa: ANN001
+        monkeypatch.setattr(slack_helpers, "cfg", slack_helpers.cfg.model_copy(update={"secrets_ui_url": url}))
+
+    def test_links_the_secrets_ui_for_secrets_editor(self, monkeypatch):  # noqa: ANN001
+        self._patch_url(monkeypatch, SECRETS_UI_URL)
+        hint = slack_helpers.build_secrets_ui_hint("secrets-editor")
+        assert hint is not None
+        assert f"<{SECRETS_UI_URL}|the secrets UI>" in hint
+
+    def test_none_for_other_permission_sets(self, monkeypatch):  # noqa: ANN001
+        self._patch_url(monkeypatch, SECRETS_UI_URL)
+        assert slack_helpers.build_secrets_ui_hint("AdministratorAccess") is None
+
+    def test_none_when_url_unset(self, monkeypatch):  # noqa: ANN001
+        self._patch_url(monkeypatch, "")
+        assert slack_helpers.build_secrets_ui_hint("secrets-editor") is None
+
+    def test_match_is_exact_not_substring(self, monkeypatch):  # noqa: ANN001
+        """A role merely containing the name (e.g. a stricter variant) is not the same role."""
+        self._patch_url(monkeypatch, SECRETS_UI_URL)
+        assert slack_helpers.build_secrets_ui_hint("secrets-editor-readonly") is None
+
+
 def _sso_group(name: str, id_: str) -> SSOGroup:
     return SSOGroup(name=name, id=id_, description=None, identity_store_id="d-1")
 

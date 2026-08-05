@@ -79,6 +79,12 @@ variable "access_docs_url" {
   default     = ""
 }
 
+variable "secrets_ui_url" {
+  description = "Optional URL to a self-service secrets UI. When set, a reply is posted in the request thread whenever someone requests the `secrets-editor` permission set, pointing them at the UI so they can skip the AWS grant for routine secret edits. Leave blank to disable the reply."
+  type        = string
+  default     = ""
+}
+
 variable "schedule_expression" {
   description = "recovation schedule expression (will revoke all user-level assignments unknown to the Elevator)"
   type        = string
