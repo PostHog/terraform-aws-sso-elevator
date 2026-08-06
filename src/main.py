@@ -508,6 +508,27 @@ app.action(entities.ApproverAction.Deny.value)(
 )
 
 
+def _post_permission_set_hint(client: WebClient, permission_set: entities.aws.PermissionSet, message_ts: str | None) -> None:
+    """Reply in the request's thread with the operator's hint for this permission set, if any.
+
+    The hint is informational — a nudge, never a gate — so this must not be able to affect the
+    request. Two guards enforce that:
+
+    - The blanket `except`: this runs before the approval-scheduling block, so an unhandled error
+      here (rate limit, malformed operator mrkdwn, missing channel scope) would leave a live request
+      posted with no button-discard timer and no approver renotification.
+    - The `message_ts` check: `chat_postMessage` with `thread_ts=None` posts a *top-level* channel
+      message, which would put a stray un-threaded hint in the request channel.
+    """
+    hint = slack_helpers.resolve_permission_set_hint(permission_set, cfg.permission_set_hints)
+    if not hint or message_ts is None:
+        return
+    try:
+        client.chat_postMessage(text=hint, thread_ts=message_ts, channel=cfg.slack_channel_id)
+    except Exception:
+        logger.warning("Failed to post permission set hint; the request itself is unaffected", exc_info=True)
+
+
 def _process_single_access_request(  # noqa: PLR0915, PLR0912
     request: slack_helpers.RequestForAccess,
     requester: entities.slack.User,
@@ -580,6 +601,8 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
         channel=cfg.slack_channel_id,
         text=f"Request for access to {account.name} account from {requester.real_name}",
     )
+
+    _post_permission_set_hint(client, permission_set, slack_response["ts"])
 
     if show_buttons:
         ts = slack_response["ts"]
@@ -898,6 +921,45 @@ def _get_cached_user_info(view_key: str, user_id: str, client: "WebClient") -> t
     return user_group_ids, user_email
 
 
+def _resolve_auto_approved_arns(  # noqa: PLR0913
+    client: WebClient,
+    permission_sets: list[entities.aws.PermissionSet],
+    account_ids: list[str],
+    user_email: str | None,
+    user_group_ids: set[str],
+    user_id: str,
+) -> set[str] | None:
+    """ARNs the requester can get without approval, for the "Auto approved" dropdown group.
+
+    None (rather than an empty set) when the requester's email is unknown, which tells the view
+    builder to render one flat list instead of splitting it into misleading groups.
+    """
+    if not user_email:
+        return None
+
+    resolver_cache: dict[frozenset[str], set[str]] = {}
+
+    def approver_group_resolver(group_ids: frozenset[str]) -> set[str]:
+        if not group_ids:
+            return set()
+        if group_ids in resolver_cache:
+            return resolver_cache[group_ids]
+        group_users, _ = slack_helpers.resolve_approver_groups(client, group_ids)
+        result = {u.id for u in group_users}
+        resolver_cache[group_ids] = result
+        return result
+
+    return classify_auto_approved_permission_sets(
+        statements=cfg.statements,
+        permission_sets=permission_sets,
+        account_ids=account_ids,
+        requester_email=user_email,
+        user_group_ids=user_group_ids,
+        requester_slack_id=user_id,
+        approver_group_resolver=approver_group_resolver,
+    )
+
+
 def handle_load_permission_sets(ack: Ack, body: dict, client: WebClient) -> SlackResponse | None:
     ack()
     logger.info("Handling load-permission-sets button")
@@ -971,29 +1033,22 @@ def handle_load_permission_sets(ack: Ack, body: dict, client: WebClient) -> Slac
         return safe_views_update(updated_view)
 
     # Classify permission sets as auto-approved vs requires-approval
-    auto_approved_arns: set[str] | None = None
-    if user_email:
-        resolver_cache: dict[frozenset[str], set[str]] = {}
+    auto_approved_arns = _resolve_auto_approved_arns(
+        client=client,
+        permission_sets=permission_sets,
+        account_ids=account_ids,
+        user_email=user_email,
+        user_group_ids=user_group_ids,
+        user_id=user_id,
+    )
 
-        def approver_group_resolver(group_ids: frozenset[str]) -> set[str]:
-            if not group_ids:
-                return set()
-            if group_ids in resolver_cache:
-                return resolver_cache[group_ids]
-            group_users, _ = slack_helpers.resolve_approver_groups(client, group_ids)
-            result = {u.id for u in group_users}
-            resolver_cache[group_ids] = result
-            return result
-
-        auto_approved_arns = classify_auto_approved_permission_sets(
-            statements=cfg.statements,
-            permission_sets=permission_sets,
-            account_ids=account_ids,
-            requester_email=user_email,
-            user_group_ids=user_group_ids,
-            requester_slack_id=user_id,
-            approver_group_resolver=approver_group_resolver,
-        )
+    # Resolve hints by ARN now, while the permission set objects (name *and* ARN) are in hand, and
+    # stash them for the selection handler. That handler only learns the selected ARN, and resolving
+    # the name there would mean an SSO round trip before it can show its loading spinner — see the
+    # "before any AWS calls" note above. This keeps name-keyed and ARN-keyed hints equally instant.
+    user_view_map[f"{view_key}:permission_set_hints_by_arn"] = {
+        ps.arn: hint for ps in permission_sets if (hint := slack_helpers.resolve_permission_set_hint(ps, cfg.permission_set_hints))
+    }
 
     updated_view = slack_helpers.RequestForAccessView.update_with_permission_sets(
         view_blocks=current_blocks,
@@ -1063,14 +1118,29 @@ def _handle_permission_set_selection_impl(body: dict, client: WebClient) -> Slac
             view_hash = new_hash
         return response
 
-    loading_response = safe_views_update(slack_helpers.RequestForAccessView.show_approvers_loading(body["view"]["blocks"]))
+    user_id = body.get("user", {}).get("id")
+    callback_id = slack_helpers.RequestForAccessView.CALLBACK_ID
+    view_key = f"{user_id}:{callback_id}"
+
+    # Look up the hint before the first view update, so it renders even on the paths that bail
+    # below (stale view hash, unknown ARN, or the caller's blanket except).
+    #
+    # The stash from `handle_load_permission_sets` is an optimization, never an authority. It is
+    # keyed per user and never evicted, so a warm container can hold one built for a different
+    # account selection — or a different modal entirely — that simply lacks this ARN. A miss
+    # therefore falls through to the ARN-only config lookup instead of being read as "no hint".
+    hints_by_arn = user_view_map.get(f"{view_key}:permission_set_hints_by_arn") or {}
+    hint_text = hints_by_arn.get(permission_set_arn) or slack_helpers.resolve_permission_set_hint_by_arn(
+        permission_set_arn, cfg.permission_set_hints
+    )
+
+    loading_response = safe_views_update(
+        slack_helpers.RequestForAccessView.show_approvers_loading(body["view"]["blocks"], hint_text=hint_text)
+    )
     if loading_response is None:
         return None
     current_blocks = loading_response.data["view"]["blocks"]  # type: ignore[index]
 
-    user_id = body.get("user", {}).get("id")
-    callback_id = slack_helpers.RequestForAccessView.CALLBACK_ID
-    view_key = f"{user_id}:{callback_id}"
     user_group_ids, user_email = _get_cached_user_info(view_key, user_id, client)
 
     all_ps = sso.get_permission_sets_from_config_with_cache(sso_client=sso_client, s3_client=s3_client, cfg=cfg)
@@ -1078,6 +1148,12 @@ def _handle_permission_set_selection_impl(body: dict, client: WebClient) -> Slac
     if ps is None:
         logger.warning(f"Permission set ARN not found in config: {permission_set_arn}")
         return None
+
+    # Redo the lookup unconditionally now that the permission set is resolved: this is the full
+    # name-or-ARN match against the current config, so a name-keyed hint lands even when the stash
+    # was absent or stale. Worst case such a hint arrives with the approvers preview rather than the
+    # loading spinner — it is never silently dropped.
+    hint_text = slack_helpers.resolve_permission_set_hint(ps, cfg.permission_set_hints)
 
     resolver_cache: dict[frozenset[str], set[str]] = {}
 
@@ -1107,7 +1183,7 @@ def _handle_permission_set_selection_impl(body: dict, client: WebClient) -> Slac
 
     email_cache = user_view_map.setdefault(f"{view_key}:approver_email_to_slack", {})
     text = slack_helpers.build_approvers_preview_text(client, decisions, email_cache)
-    updated_view = slack_helpers.RequestForAccessView.update_with_approvers(view_blocks=current_blocks, text=text)
+    updated_view = slack_helpers.RequestForAccessView.update_with_approvers(view_blocks=current_blocks, text=text, hint_text=hint_text)
     return safe_views_update(updated_view)
 
 

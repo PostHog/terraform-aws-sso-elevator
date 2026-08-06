@@ -122,6 +122,29 @@ EOT
   default     = {}
 }
 
+variable "permission_set_hints" {
+  description = <<EOT
+Optional mapping of permission set names (or ARNs) to a hint shown when that permission set
+is selected. Keys are AWS SSO permission set names or ARNs (as used in config statements);
+a name match wins over an ARN match. Values are Slack mrkdwn, rendered verbatim, so links use
+Slack's <URL|label> syntax.
+Example:
+{
+  "secrets-editor" = ":bulb: Most secret changes don't need this role -- read and edit directly in <https://secrets.example.com|the secrets UI>."
+  "prod-admin"     = ":warning: Read <https://wiki.example.com/prod-admin|the runbook> before requesting."
+}
+The hint appears twice: as a grey context line under the permission set dropdown the moment the
+role is selected, and as a reply in the request's Slack thread after submission. It is purely
+informational -- it never blocks or gates a request.
+Permission sets without a mapping show no hint. This is independent of "access_docs_url": when
+both are set, the general docs link and the role-specific hint are shown together.
+Leave empty ({}) to disable.
+Note: hints are truncated to 3000 characters (Slack's context block limit).
+EOT
+  type        = map(string)
+  default     = {}
+}
+
 variable "account_sections" {
   description = <<EOT
 Optional, ordered list of sections used to group the "AWS Account(s)" multi-select

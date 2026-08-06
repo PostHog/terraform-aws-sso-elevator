@@ -47,6 +47,9 @@ def mock_main_imports():
     mock_cfg.max_permissions_duration_time = 8
     mock_cfg.permission_duration_list_override = None
     mock_cfg.permission_set_display_names = None
+    # A real dict, not a MagicMock: hint lookups do `.get(...)` and the result is rendered into
+    # Slack blocks, where a Mock would fail serialization with a confusing error.
+    mock_cfg.permission_set_hints = {}
 
     # Patch config module before importing main
     with patch.dict(
@@ -1811,3 +1814,347 @@ class TestAlreadyHandledRequest:
         # would add a test that cannot fail.
         _, execute_decision = self._run(import_main, entities.ApproverAction.Approve)
         execute_decision.assert_not_called()
+
+
+class TestPermissionSetHintInModal:
+    """Per-permission-set hint rendered in the request modal on selection."""
+
+    PS_ARN = "arn:aws:sso:::permissionSet/ssoins-abc/ps-123"
+    ACCOUNT_ID = "111111111111"
+    USER_ID = "U_REQUESTER"
+    VIEW_KEY = f"{USER_ID}:request_for__account_access_submitted"
+    HINT = ":bulb: Try the secrets UI first."
+
+    def _ps(self, name="secrets-editor"):
+        return entities.aws.PermissionSet(name=name, arn=self.PS_ARN, description=None)
+
+    def _body(self):
+        return TestHandlePermissionSetSelection._body(
+            TestHandlePermissionSetSelection(), account_ids=[self.ACCOUNT_ID], permission_set_arn=self.PS_ARN
+        )
+
+    def _mock_client(self):
+        return TestHandlePermissionSetSelection._mock_client_with_update(TestHandlePermissionSetSelection())
+
+    def _seed_user_cache(self, main):
+        main.user_view_map[f"{self.VIEW_KEY}:group_ids"] = set()
+        main.user_view_map[f"{self.VIEW_KEY}:user_email"] = "requester@test.com"
+
+    def _hint_blocks(self, mock_client):
+        import slack_helpers
+
+        hint_id = slack_helpers.RequestForAccessView.PERMISSION_SET_HINT_BLOCK_ID
+        found = []
+        for call in mock_client.views_update.call_args_list:
+            view = call.kwargs["view"]
+            found.append([b for b in view.blocks if slack_helpers.get_block_id(b) == hint_id])
+        return found
+
+    def _run_selection(self, main, mock_client):
+        import access_control
+
+        decision = access_control.AccessRequestDecision(
+            grant=False,
+            reason=access_control.DecisionReason.RequiresApproval,
+            based_on_statements=frozenset(),
+            approvers=frozenset(["alice@test.com"]),
+            approver_groups=frozenset(),
+        )
+        with (
+            patch.object(main.sso, "get_permission_sets_from_config_with_cache", return_value=[self._ps()]),
+            patch.object(main.access_control, "make_decision_on_access_request", return_value=decision),
+            patch.object(
+                main.slack_helpers,
+                "get_user_by_email",
+                return_value=entities.slack.User(id="U_ALICE", email="alice@test.com", real_name="Alice"),
+            ),
+        ):
+            main._handle_permission_set_selection_impl(self._body(), mock_client)
+
+    def test_hint_in_both_view_updates_when_stashed(self, import_main):
+        """Emitted in the loading pass as well as the final one: the handler can bail in between
+        (stale view hash, unknown ARN, blanket except) and a hint present only in the final update
+        would never render on those paths."""
+        main = import_main
+        main.user_view_map.clear()
+        self._seed_user_cache(main)
+        # The shape the stash exists for: config keyed by *name*, stash keyed by ARN. Without the
+        # stash the loading pass has only the ARN and would miss this hint until the final update.
+        main.cfg.permission_set_hints = {"secrets-editor": self.HINT}
+        main.user_view_map[f"{self.VIEW_KEY}:permission_set_hints_by_arn"] = {self.PS_ARN: self.HINT}
+        mock_client = self._mock_client()
+
+        self._run_selection(main, mock_client)
+
+        per_update = self._hint_blocks(mock_client)
+        assert len(per_update) == 2
+        assert all(len(blocks) == 1 for blocks in per_update)
+        assert all(blocks[0].elements[0].text == self.HINT for blocks in per_update)
+
+    def test_no_hint_block_when_permission_set_is_unmapped(self, import_main):
+        main = import_main
+        main.user_view_map.clear()
+        self._seed_user_cache(main)
+        main.user_view_map[f"{self.VIEW_KEY}:permission_set_hints_by_arn"] = {}
+        main.cfg.permission_set_hints = {}
+        mock_client = self._mock_client()
+
+        self._run_selection(main, mock_client)
+
+        assert all(blocks == [] for blocks in self._hint_blocks(mock_client))
+
+    def test_name_keyed_hint_survives_a_recycled_container(self, import_main):
+        """With the stash gone, only the ARN is known for the loading pass, so a name-keyed hint
+        arrives with the approvers preview instead of being lost."""
+        main = import_main
+        main.user_view_map.clear()
+        self._seed_user_cache(main)  # stash deliberately absent
+        main.cfg.permission_set_hints = {"secrets-editor": self.HINT}
+        mock_client = self._mock_client()
+
+        self._run_selection(main, mock_client)
+
+        loading_blocks, final_blocks = self._hint_blocks(mock_client)
+        assert loading_blocks == []
+        assert final_blocks[0].elements[0].text == self.HINT
+
+    def test_stale_stash_falls_through_to_the_config_lookup(self, import_main):
+        """The stash is keyed per user and never evicted, so a warm container can hold one built for
+        a different account selection (or a different modal) that lacks this ARN. Treating that miss
+        as "no hint" would silently drop a configured hint, so it must fall through to the config."""
+        main = import_main
+        main.user_view_map.clear()
+        self._seed_user_cache(main)
+        # Stash from an earlier modal: non-empty, but missing the ARN now being selected.
+        main.user_view_map[f"{self.VIEW_KEY}:permission_set_hints_by_arn"] = {"arn:aws:sso:::permissionSet/other": "old hint"}
+        main.cfg.permission_set_hints = {self.PS_ARN: self.HINT}
+        mock_client = self._mock_client()
+
+        self._run_selection(main, mock_client)
+
+        assert all(blocks[0].elements[0].text == self.HINT for blocks in self._hint_blocks(mock_client))
+
+    def test_arn_keyed_hint_renders_immediately_without_the_stash(self, import_main):
+        main = import_main
+        main.user_view_map.clear()
+        self._seed_user_cache(main)
+        main.cfg.permission_set_hints = {self.PS_ARN: self.HINT}
+        mock_client = self._mock_client()
+
+        self._run_selection(main, mock_client)
+
+        assert all(blocks[0].elements[0].text == self.HINT for blocks in self._hint_blocks(mock_client))
+
+    def test_load_permission_sets_stashes_hints_by_arn(self, import_main):
+        """The stash is what lets the selection handler resolve a name-keyed hint with no AWS call
+        before it shows the loading spinner."""
+        import slack_helpers
+
+        main = import_main
+        main.user_view_map.clear()
+        self._seed_user_cache(main)
+        main.cfg.permission_set_hints = {"secrets-editor": self.HINT}
+        main.cfg.statements = frozenset()
+        mock_client = self._mock_client()
+
+        body = {
+            "user": {"id": self.USER_ID},
+            "view": {
+                "id": "V_TEST",
+                "hash": "hash-1",
+                "state": {
+                    "values": {
+                        slack_helpers.RequestForAccessView.ACCOUNT_BLOCK_ID: {
+                            slack_helpers.RequestForAccessView.ACCOUNT_ACTION_ID: {"selected_options": [{"value": self.ACCOUNT_ID}]}
+                        }
+                    }
+                },
+                "blocks": slack_helpers.RequestForAccessView.update_with_accounts(
+                    [entities.aws.Account(id=self.ACCOUNT_ID, name="prod")]
+                ).to_dict()["blocks"],
+            },
+        }
+
+        def _echo_view(**kwargs):
+            view = kwargs["view"]
+            blocks = view.to_dict()["blocks"] if hasattr(view, "to_dict") else view["blocks"]
+            return MagicMock(data={"view": {"blocks": blocks, "hash": "h2"}})
+
+        mock_client.views_update.side_effect = _echo_view
+
+        with (
+            patch.object(main.statement, "get_permission_sets_for_accounts_and_user", return_value={"*"}),
+            patch.object(main.sso, "get_permission_sets_from_config_with_cache", return_value=[self._ps()]),
+            patch.object(main.slack_helpers.RequestForAccessView, "update_with_permission_sets", return_value=MagicMock()),
+        ):
+            main.handle_load_permission_sets(MagicMock(), body, mock_client)
+
+        assert main.user_view_map[f"{self.VIEW_KEY}:permission_set_hints_by_arn"] == {self.PS_ARN: self.HINT}
+
+
+class TestPermissionSetHintThreadReply:
+    """Per-permission-set hint posted as a reply in the request's Slack thread."""
+
+    HINT = ":bulb: Try the secrets UI first."
+    MESSAGE_TS = "123.456"
+
+    def _ps(self, name="secrets-editor"):
+        return entities.aws.PermissionSet(name=name, arn="arn:aws:sso:::permissionSet/ssoins-abc/ps-123", description=None)
+
+    def _hint_calls(self, mock_client):
+        return [c for c in mock_client.chat_postMessage.call_args_list if c.kwargs.get("text") == self.HINT]
+
+    def test_posted_as_a_threaded_reply(self, import_main):
+        main = import_main
+        main.cfg.permission_set_hints = {"secrets-editor": self.HINT}
+        mock_client = MagicMock()
+
+        main._post_permission_set_hint(mock_client, self._ps(), self.MESSAGE_TS)
+
+        calls = self._hint_calls(mock_client)
+        assert len(calls) == 1
+        assert calls[0].kwargs["thread_ts"] == self.MESSAGE_TS
+        assert calls[0].kwargs["channel"] == main.cfg.slack_channel_id
+
+    def test_not_posted_for_unmapped_permission_set(self, import_main):
+        main = import_main
+        main.cfg.permission_set_hints = {"secrets-editor": self.HINT}
+        mock_client = MagicMock()
+
+        main._post_permission_set_hint(mock_client, self._ps("AdministratorAccess"), self.MESSAGE_TS)
+
+        mock_client.chat_postMessage.assert_not_called()
+
+    def test_not_posted_when_no_hints_configured(self, import_main):
+        main = import_main
+        main.cfg.permission_set_hints = {}
+        mock_client = MagicMock()
+
+        main._post_permission_set_hint(mock_client, self._ps(), self.MESSAGE_TS)
+
+        mock_client.chat_postMessage.assert_not_called()
+
+    def test_never_posted_top_level_when_ts_is_missing(self, import_main):
+        """chat_postMessage with thread_ts=None posts to the channel root, which would put a stray
+        un-threaded hint in the request channel."""
+        main = import_main
+        main.cfg.permission_set_hints = {"secrets-editor": self.HINT}
+        mock_client = MagicMock()
+
+        main._post_permission_set_hint(mock_client, self._ps(), None)
+
+        mock_client.chat_postMessage.assert_not_called()
+
+    def test_post_failure_is_swallowed(self, import_main):
+        """The hint is a nudge, not a gate."""
+        main = import_main
+        main.cfg.permission_set_hints = {"secrets-editor": self.HINT}
+        mock_client = MagicMock()
+        mock_client.chat_postMessage.side_effect = Exception("ratelimited")
+
+        main._post_permission_set_hint(mock_client, self._ps(), self.MESSAGE_TS)
+
+    def _run_request(self, main, hints, chat_post_side_effect=None):
+        """Drive a full access request through _process_single_access_request."""
+        import access_control
+        import slack_helpers
+
+        main.cfg.permission_set_hints = hints
+        decision = access_control.AccessRequestDecision(
+            grant=False,
+            reason=access_control.DecisionReason.RequiresApproval,
+            based_on_statements=frozenset(),
+            approvers=frozenset(["approver@test.com"]),
+            approver_groups=frozenset(),
+        )
+        patches = [
+            patch.object(main.access_control, "make_decision_on_access_request", return_value=decision),
+            patch.object(main.access_control, "execute_decision", return_value=access_control.ExecuteDecisionResult(granted=False)),
+            patch.object(main.sso, "get_permission_set", return_value=self._ps()),
+            patch.object(main.sso, "get_identity_store_id", return_value="d-123456"),
+            patch.object(main.sso, "get_user_principal_id_by_email", return_value=("principal-id", None)),
+            patch.object(
+                main.organizations,
+                "describe_account",
+                side_effect=lambda _c, account_id: entities.aws.Account(id=account_id, name=f"Account-{account_id}"),
+            ),
+            patch.object(main.slack_helpers, "build_approval_request_message_blocks", return_value=[]),
+            patch.object(main.slack_helpers, "check_if_user_is_in_channel", return_value=True),
+            patch.object(
+                main.slack_helpers,
+                "get_user",
+                return_value=entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester"),
+            ),
+            patch.object(
+                main.slack_helpers,
+                "find_approvers_in_slack",
+                return_value=([entities.slack.User(id="U_APPROVER", email="approver@test.com", real_name="Approver")], []),
+            ),
+            patch.object(main.slack_helpers, "build_approver_group_mentions", return_value=""),
+            patch.object(main.analytics, "capture"),
+            patch.object(main.schedule, "schedule_discard_buttons_event"),
+            patch.object(main.schedule, "schedule_approver_notification_event"),
+        ]
+        mock_client = MagicMock()
+        if chat_post_side_effect is not None:
+            mock_client.chat_postMessage.side_effect = chat_post_side_effect
+        else:
+            mock_client.chat_postMessage.return_value = {"ts": self.MESSAGE_TS, "message": {"blocks": []}}
+        for p in patches:
+            p.start()
+        # Captured while the patches are live; the assertions run after they are stopped.
+        discard = main.schedule.schedule_discard_buttons_event
+        renotify = main.schedule.schedule_approver_notification_event
+        try:
+            main._process_single_access_request(
+                request=slack_helpers.RequestForAccess(
+                    permission_set_name="secrets-editor",
+                    account_id="111111111111",
+                    reason="Rotating a token",
+                    requester_slack_id="U_REQUESTER",
+                    permission_duration=timedelta(hours=1),
+                ),
+                requester=entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester"),
+                user_group_ids=set(),
+                client=mock_client,
+                is_user_in_channel=True,
+            )
+        finally:
+            for p in patches:
+                p.stop()
+        return mock_client, discard, renotify
+
+    def test_request_flow_posts_the_hint_in_the_request_thread(self, import_main):
+        main = import_main
+        mock_client, _, _ = self._run_request(main, {"secrets-editor": self.HINT})
+
+        calls = self._hint_calls(mock_client)
+        assert len(calls) == 1
+        assert calls[0].kwargs["thread_ts"] == self.MESSAGE_TS
+
+    def test_request_still_reaches_approval(self, import_main):
+        """The hint must not change the request's outcome."""
+        main = import_main
+        mock_client, _, _ = self._run_request(main, {"secrets-editor": self.HINT})
+
+        texts = [c.kwargs.get("text", "") for c in mock_client.chat_postMessage.call_args_list]
+        assert any("awaiting approval" in t.lower() for t in texts)
+
+    def test_scheduling_survives_a_failing_hint_post(self, import_main):
+        """The hint post runs before the approval-scheduling block. If it could raise, a live
+        request would be left with no button-discard timer and no approver renotification."""
+        main = import_main
+
+        posted = {"n": 0}
+
+        def _post(**kwargs):
+            posted["n"] += 1
+            if kwargs.get("text") == self.HINT:
+                raise Exception("ratelimited")
+            return {"ts": self.MESSAGE_TS, "message": {"blocks": []}}
+
+        mock_client, discard, renotify = self._run_request(main, {"secrets-editor": self.HINT}, chat_post_side_effect=_post)
+
+        assert posted["n"] > 1, "hint post was never attempted"
+        discard.assert_called_once()
+        renotify.assert_called_once()

@@ -53,6 +53,7 @@ def pytest_sessionstart(session):  # noqa: ANN201, ARG001, ANN001
             ]
         ),
         "permission_set_display_names": json.dumps({}),
+        "permission_set_hints": json.dumps({}),
     }
     os.environ |= mock_env
 
@@ -79,6 +80,7 @@ def mock_s3_approval_config():
             }
         ],
         "permission_set_display_names": {},
+        "permission_set_hints": {},
     }
 
 

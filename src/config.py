@@ -158,6 +158,10 @@ class Config(BaseSettings):
     groups: frozenset[str]
     permission_set_display_names: dict[str, str]
 
+    # Optional mapping of permission set name (or ARN) -> Slack mrkdwn hint, shown when that
+    # permission set is selected and as a reply in the request thread. Empty = no hints.
+    permission_set_hints: dict[str, str] = {}
+
     # Optional, ordered list of {"name": str, "accounts": [account_id, ...]} used to group the
     # account multi-select in the Slack modal into sections. Empty = flat alphabetical list.
     account_sections: list = []
@@ -217,6 +221,7 @@ class Config(BaseSettings):
             statements_raw = config_data.get("statements")
             group_statements_raw = config_data.get("group_statements")
             permission_set_display_names = config_data.get("permission_set_display_names", {})
+            permission_set_hints = config_data.get("permission_set_hints", {})
             account_sections = config_data.get("account_sections", [])
         else:
             # Fallback to environment variables. _maybe_json decodes a JSON string and passes
@@ -224,6 +229,7 @@ class Config(BaseSettings):
             statements_raw = _maybe_json(values.get("statements"))
             group_statements_raw = _maybe_json(values.get("group_statements"))
             permission_set_display_names = _maybe_json(values.get("permission_set_display_names")) or {}
+            permission_set_hints = _maybe_json(values.get("permission_set_hints")) or {}
             account_sections = _maybe_json(values.get("account_sections")) or []
 
         # Parse statements
@@ -255,6 +261,7 @@ class Config(BaseSettings):
             "group_statements": frozenset(group_statements),
             "groups": groups,
             "permission_set_display_names": permission_set_display_names,
+            "permission_set_hints": permission_set_hints,
             "account_sections": account_sections,
             "s3_bucket_prefix_for_partitions": s3_bucket_prefix_for_partitions,
         }

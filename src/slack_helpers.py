@@ -60,6 +60,10 @@ class RequestForAccessView:
     PERMISSION_SET_ACTION_ID = "selected_permission_set"
 
     PERMISSION_SET_DOCS_HINT_BLOCK_ID = "permission_set_docs_hint"
+    # Per-permission-set hint (`permission_set_hints`), distinct from the global docs hint above:
+    # that one advises on picking a role, this one advises on the role already picked. Both render
+    # when both are configured.
+    PERMISSION_SET_HINT_BLOCK_ID = "permission_set_hint"
 
     DURATION_BLOCK_ID = "duration_picker"
     DURATION_ACTION_ID = "duration_picker_action"
@@ -322,6 +326,7 @@ class RequestForAccessView:
                 cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
                 cls.PERMISSION_SET_BLOCK_ID,
                 cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID,
+                cls.PERMISSION_SET_HINT_BLOCK_ID,
                 cls.PERMISSION_SET_LOADING_BLOCK_ID,
                 cls.APPROVERS_BLOCK_ID,
                 cls.APPROVERS_LOADING_BLOCK_ID,
@@ -365,13 +370,15 @@ class RequestForAccessView:
     ) -> View:
         view = cls._form_base()
         # Start from the current blocks, remove placeholder. The docs hint is removed too so a
-        # re-selected account rebuilds it exactly once (no duplicate).
+        # re-selected account rebuilds it exactly once (no duplicate). The per-permission-set hint
+        # goes as well: the new dropdown has no selection, so any hint from the old one is stale.
         blocks = remove_blocks(
             view_blocks,
             block_ids=[
                 cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
                 cls.PERMISSION_SET_BLOCK_ID,
                 cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID,
+                cls.PERMISSION_SET_HINT_BLOCK_ID,
                 cls.PERMISSION_SET_LOADING_BLOCK_ID,
                 cls.APPROVERS_BLOCK_ID,
                 cls.APPROVERS_LOADING_BLOCK_ID,
@@ -412,28 +419,42 @@ class RequestForAccessView:
         )
 
     @classmethod
-    def show_approvers_loading(cls, view_blocks: list) -> View:
+    def _replace_approvers_block(cls, view_blocks: list, approvers_block: Block, hint_text: Optional[str]) -> View:
+        """Swap the approvers block (loading or resolved) and the per-permission-set hint in one
+        pass. Both are rebuilt on every permission-set selection, so both are removed first —
+        otherwise re-selecting a different role would stack hints rather than replace them.
+
+        The hint and the approvers block are inserted together so the anchor stays two-deep
+        (docs-hint-if-present, else the dropdown). Inserting the hint separately would make it a
+        third possible anchor, and `insert_blocks` raises `StopIteration` on an absent one.
+        """
         view = cls._form_base()
-        blocks = remove_blocks(view_blocks, block_ids=[cls.APPROVERS_BLOCK_ID, cls.APPROVERS_LOADING_BLOCK_ID])
-        blocks = insert_blocks(
+        blocks = remove_blocks(
+            view_blocks,
+            block_ids=[cls.PERMISSION_SET_HINT_BLOCK_ID, cls.APPROVERS_BLOCK_ID, cls.APPROVERS_LOADING_BLOCK_ID],
+        )
+        to_insert: list[Block] = []
+        if hint_text:
+            to_insert.append(build_permission_set_hint_block(cls.PERMISSION_SET_HINT_BLOCK_ID, hint_text))
+        to_insert.append(approvers_block)
+        view.blocks = insert_blocks(
             blocks=blocks,
-            blocks_to_insert=[cls.build_approvers_loading_block()],
+            blocks_to_insert=to_insert,
             after_block_id=docs_hint_anchor(blocks, cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID),
         )
-        view.blocks = blocks
         return view
 
     @classmethod
-    def update_with_approvers(cls, view_blocks: list, text: str) -> View:
-        view = cls._form_base()
-        blocks = remove_blocks(view_blocks, block_ids=[cls.APPROVERS_BLOCK_ID, cls.APPROVERS_LOADING_BLOCK_ID])
-        blocks = insert_blocks(
-            blocks=blocks,
-            blocks_to_insert=[cls.build_approvers_preview_block(text)],
-            after_block_id=docs_hint_anchor(blocks, cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID, cls.PERMISSION_SET_BLOCK_ID),
-        )
-        view.blocks = blocks
-        return view
+    def show_approvers_loading(cls, view_blocks: list, hint_text: Optional[str] = None) -> View:
+        # The hint is rendered here, in the *first* update after a selection, not only in
+        # `update_with_approvers`. Everything downstream of this point can bail — stale view hash,
+        # unknown permission set ARN, or the caller's blanket except — and a hint emitted only in
+        # the final update would silently never appear on any of those paths.
+        return cls._replace_approvers_block(view_blocks, cls.build_approvers_loading_block(), hint_text)
+
+    @classmethod
+    def update_with_approvers(cls, view_blocks: list, text: str, hint_text: Optional[str] = None) -> View:
+        return cls._replace_approvers_block(view_blocks, cls.build_approvers_preview_block(text), hint_text)
 
     @classmethod
     def build_no_permission_sets_block(cls) -> SectionBlock:
@@ -475,11 +496,16 @@ class RequestForAccessView:
         present (so Slack requires a submit button); a submit with no permission set is rejected by
         the `acknowledge_request_for_access` guard."""
         view = cls._form_base()
+        # Both hints are stripped: with no dropdown there is nothing to advise on. (They were
+        # previously omitted here, harmless only because `show_permission_set_loading` runs first on
+        # the live path and already removes them — but this method must not depend on that.)
         blocks = remove_blocks(
             view_blocks,
             block_ids=[
                 cls.PERMISSION_SET_PLACEHOLDER_BLOCK_ID,
                 cls.PERMISSION_SET_BLOCK_ID,
+                cls.PERMISSION_SET_DOCS_HINT_BLOCK_ID,
+                cls.PERMISSION_SET_HINT_BLOCK_ID,
                 cls.PERMISSION_SET_LOADING_BLOCK_ID,
                 cls.APPROVERS_BLOCK_ID,
                 cls.APPROVERS_LOADING_BLOCK_ID,
@@ -591,6 +617,46 @@ def build_docs_hint_block(block_id: str) -> Optional[ContextBlock]:
         block_id=block_id,
         elements=[MarkdownTextObject(text=f":book: Unsure which role to pick? <{cfg.access_docs_url}|See the access docs>")],
     )
+
+
+# Slack rejects a view whose context element text exceeds this, which would fail the whole
+# views_update rather than just dropping the hint. Truncate so one long config entry can't do that.
+MAX_HINT_LENGTH = 3000
+
+
+def resolve_permission_set_hint(ps: entities.aws.PermissionSet, hints: Optional[dict[str, str]]) -> Optional[str]:
+    """Operator-configured hint for this permission set, or None when unconfigured.
+
+    Keyed by permission set name or ARN, name first — the same fallback as
+    `_get_permission_set_display_name`, because `docs/CONFIGURATION.md` recommends ARNs in config
+    statements and a name-only match would silently no-op for those operators.
+
+    `hints` is a parameter rather than a read of the module-global `cfg` on purpose: `cfg` is bound
+    at import and never rebound, so a map arriving via the S3 config object would go stale until the
+    container recycled, defeating the reason for putting it on the S3 path. Callers pass the map
+    from a refreshed config.
+    """
+    if not hints:
+        return None
+    hint = hints.get(ps.name) or hints.get(ps.arn)
+    return hint[:MAX_HINT_LENGTH] if hint else None
+
+
+def resolve_permission_set_hint_by_arn(permission_set_arn: str, hints: Optional[dict[str, str]]) -> Optional[str]:
+    """ARN-only hint lookup, for the one path that has an ARN but not yet a resolved permission set
+    and must not pay an SSO round trip to get one. Misses hints keyed by name; callers redo the full
+    `resolve_permission_set_hint` lookup once the permission set is available."""
+    if not hints:
+        return None
+    hint = hints.get(permission_set_arn)
+    return hint[:MAX_HINT_LENGTH] if hint else None
+
+
+def build_permission_set_hint_block(block_id: str, text: str) -> ContextBlock:
+    """Grey context line carrying the operator's hint for the selected permission set. The text is
+    rendered verbatim as Slack mrkdwn (links use `<url|label>`) — no emoji or prefix is imposed, so
+    the copy stays entirely the operator's."""
+    return ContextBlock(block_id=block_id, elements=[MarkdownTextObject(text=text)])
 
 
 def docs_hint_anchor(blocks: list, hint_block_id: str, fallback_block_id: str) -> str:

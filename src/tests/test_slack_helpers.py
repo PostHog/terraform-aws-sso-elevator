@@ -1414,6 +1414,123 @@ class TestAccountDocsHint:
         )
 
 
+PS_HINT = ":bulb: Most secret changes don't need this role — use <https://secrets.example.com|the secrets UI>."
+
+
+class TestResolvePermissionSetHint:
+    """Hint lookup, keyed by permission set name or ARN."""
+
+    def test_matches_by_name(self):
+        assert slack_helpers.resolve_permission_set_hint(_ps("secrets-editor"), {"secrets-editor": PS_HINT}) == PS_HINT
+
+    def test_matches_by_arn(self):
+        """docs/CONFIGURATION.md recommends ARNs in config statements, so operators keying the hint
+        map the same way must not silently get nothing."""
+        ps = _ps("secrets-editor")
+        assert slack_helpers.resolve_permission_set_hint(ps, {ps.arn: PS_HINT}) == PS_HINT
+
+    def test_name_wins_over_arn(self):
+        ps = _ps("secrets-editor")
+        assert slack_helpers.resolve_permission_set_hint(ps, {ps.name: "by name", ps.arn: "by arn"}) == "by name"
+
+    def test_none_for_unmapped_permission_set(self):
+        assert slack_helpers.resolve_permission_set_hint(_ps("AdministratorAccess"), {"secrets-editor": PS_HINT}) is None
+
+    def test_none_when_no_hints_configured(self):
+        assert slack_helpers.resolve_permission_set_hint(_ps("secrets-editor"), {}) is None
+        assert slack_helpers.resolve_permission_set_hint(_ps("secrets-editor"), None) is None
+
+    def test_match_is_exact_not_substring(self):
+        """A role merely containing the name (e.g. a stricter variant) is a different role."""
+        assert slack_helpers.resolve_permission_set_hint(_ps("secrets-editor-readonly"), {"secrets-editor": PS_HINT}) is None
+
+    def test_truncated_to_slack_limit(self):
+        """Slack rejects the whole view if a context element is over-long, so one runaway config
+        entry must not be able to break the modal."""
+        hint = slack_helpers.resolve_permission_set_hint(_ps("admin"), {"admin": "x" * 5000})
+        assert hint is not None
+        assert len(hint) == slack_helpers.MAX_HINT_LENGTH
+
+    def test_by_arn_helper_ignores_name_keys(self):
+        """The degraded lookup used before the permission set is resolved matches ARNs only."""
+        ps = _ps("secrets-editor")
+        assert slack_helpers.resolve_permission_set_hint_by_arn(ps.arn, {ps.arn: PS_HINT}) == PS_HINT
+        assert slack_helpers.resolve_permission_set_hint_by_arn(ps.arn, {ps.name: PS_HINT}) is None
+
+
+class TestPermissionSetHintBlock:
+    """Placement of the per-permission-set hint in the account-access modal."""
+
+    def _form_with_permission_sets(self):  # noqa: ANN202
+        view = RequestForAccessView.update_with_accounts([_acct("111111111111", "prod")])
+        return RequestForAccessView.update_with_permission_sets(view.blocks, [_ps("secrets-editor"), _ps("ReadOnly")])
+
+    HINT_ID = RequestForAccessView.PERMISSION_SET_HINT_BLOCK_ID
+    DOCS_ID = RequestForAccessView.PERMISSION_SET_DOCS_HINT_BLOCK_ID
+
+    def test_rendered_in_the_loading_pass_not_only_the_final_one(self, monkeypatch):  # noqa: ANN001
+        """The selection handler can bail after the loading update (stale view hash, unknown ARN,
+        blanket except). A hint emitted only in update_with_approvers would never show on those."""
+        _patch_docs_url(monkeypatch, "")
+        view = RequestForAccessView.show_approvers_loading(self._form_with_permission_sets().blocks, hint_text=PS_HINT)
+        assert _hint_text(view, self.HINT_ID) == PS_HINT
+
+    def test_absent_when_no_hint_for_selected_permission_set(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, "")
+        view = RequestForAccessView.update_with_approvers(self._form_with_permission_sets().blocks, "approvers", hint_text=None)
+        assert self.HINT_ID not in _block_ids(view)
+
+    def test_order_is_dropdown_then_docs_hint_then_ps_hint_then_approvers(self, monkeypatch):  # noqa: ANN001
+        """The global docs hint and the per-permission-set hint answer different questions, so both
+        render when both are configured."""
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = RequestForAccessView.update_with_approvers(self._form_with_permission_sets().blocks, "approvers", hint_text=PS_HINT)
+        ids = _block_ids(view)
+        assert (
+            ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID)
+            < ids.index(self.DOCS_ID)
+            < ids.index(self.HINT_ID)
+            < ids.index(RequestForAccessView.APPROVERS_BLOCK_ID)
+        )
+
+    def test_anchors_to_dropdown_when_docs_url_unset(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, "")
+        view = RequestForAccessView.update_with_approvers(self._form_with_permission_sets().blocks, "approvers", hint_text=PS_HINT)
+        ids = _block_ids(view)
+        assert self.DOCS_ID not in ids
+        assert ids.index(self.HINT_ID) == ids.index(RequestForAccessView.PERMISSION_SET_BLOCK_ID) + 1
+
+    def test_replaced_not_stacked_when_another_permission_set_is_selected(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = RequestForAccessView.show_approvers_loading(self._form_with_permission_sets().blocks, hint_text=PS_HINT)
+        view = RequestForAccessView.update_with_approvers(view.blocks, "approvers", hint_text="second role hint")
+        assert _block_ids(view).count(self.HINT_ID) == 1
+        assert _hint_text(view, self.HINT_ID) == "second role hint"
+
+    def test_cleared_when_selecting_a_permission_set_without_a_hint(self, monkeypatch):  # noqa: ANN001
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = RequestForAccessView.show_approvers_loading(self._form_with_permission_sets().blocks, hint_text=PS_HINT)
+        view = RequestForAccessView.show_approvers_loading(view.blocks, hint_text=None)
+        assert self.HINT_ID not in _block_ids(view)
+
+    def test_cleared_when_accounts_are_reselected(self, monkeypatch):  # noqa: ANN001
+        """A new permission-set list means the old selection (and its hint) no longer applies."""
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = RequestForAccessView.update_with_approvers(self._form_with_permission_sets().blocks, "approvers", hint_text=PS_HINT)
+        view = RequestForAccessView.show_permission_set_loading(view.blocks)
+        assert self.HINT_ID not in _block_ids(view)
+
+    def test_cleared_when_no_permission_sets_are_available(self, monkeypatch):  # noqa: ANN001
+        """build_no_permission_sets_view must strip both hints itself rather than relying on
+        show_permission_set_loading having run first."""
+        _patch_docs_url(monkeypatch, DOCS_URL)
+        view = RequestForAccessView.update_with_approvers(self._form_with_permission_sets().blocks, "approvers", hint_text=PS_HINT)
+        view = RequestForAccessView.build_no_permission_sets_view(view.blocks)
+        ids = _block_ids(view)
+        assert self.HINT_ID not in ids
+        assert self.DOCS_ID not in ids
+
+
 def _sso_group(name: str, id_: str) -> SSOGroup:
     return SSOGroup(name=name, id=id_, description=None, identity_store_id="d-1")
 

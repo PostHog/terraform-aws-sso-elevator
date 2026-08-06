@@ -543,6 +543,75 @@ def test_config_defaults_empty_account_sections_from_env():
     assert cfg.account_sections == []
 
 
+PERMISSION_SET_HINTS = {
+    "secrets-editor": ":bulb: Most secret changes don't need this role.",
+    "arn:aws:sso:::permissionSet/ssoins-1/ps-2": "See <https://wiki.example.com|the runbook> first.",
+}
+
+
+def test_config_parses_permission_set_hints_from_s3(mock_s3_client, monkeypatch):
+    """S3 config with permission_set_hints is parsed into Config. Riding the S3 object (rather than
+    a Lambda env var) is what gives hint text hot reload via check_and_refresh_config."""
+    import boto3
+
+    s3_config = {
+        "statements": [VALID_STATEMENT_DICT],
+        "group_statements": [VALID_GROUP_STATEMENT_DICT],
+        "permission_set_hints": PERMISSION_SET_HINTS,
+    }
+    mock_s3_client.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(s3_config).encode("utf-8"))}
+    monkeypatch.setattr(boto3, "client", lambda service: mock_s3_client if service == "s3" else MagicMock())
+
+    config_dict = valid_config_dict(secondary_fallback_email_domains_as_json=False, permission_duration_list_override_as_json=False)
+    config_dict["config_s3_key"] = "config/approval-config.json"
+    del config_dict["statements"]
+    del config_dict["group_statements"]
+
+    cfg = config.Config(**config_dict)
+    assert cfg.permission_set_hints == PERMISSION_SET_HINTS
+
+
+def test_config_defaults_empty_permission_set_hints_from_s3(mock_s3_client, monkeypatch):
+    """S3 config without permission_set_hints defaults to empty dict (feature is opt-in)."""
+    import boto3
+
+    s3_config = {
+        "statements": [VALID_STATEMENT_DICT],
+        "group_statements": [VALID_GROUP_STATEMENT_DICT],
+    }
+    mock_s3_client.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(s3_config).encode("utf-8"))}
+    monkeypatch.setattr(boto3, "client", lambda service: mock_s3_client if service == "s3" else MagicMock())
+
+    config_dict = valid_config_dict(secondary_fallback_email_domains_as_json=False, permission_duration_list_override_as_json=False)
+    config_dict["config_s3_key"] = "config/approval-config.json"
+    del config_dict["statements"]
+    del config_dict["group_statements"]
+
+    cfg = config.Config(**config_dict)
+    assert cfg.permission_set_hints == {}
+
+
+def test_config_parses_permission_set_hints_from_env():
+    """Env var path: JSON string is parsed into a dict."""
+    config_dict = valid_config_dict(
+        secondary_fallback_email_domains_as_json=False,
+        permission_duration_list_override_as_json=False,
+    )
+    config_dict["permission_set_hints"] = json.dumps(PERMISSION_SET_HINTS)
+    cfg = config.Config(**config_dict)
+    assert cfg.permission_set_hints == PERMISSION_SET_HINTS
+
+
+def test_config_defaults_empty_permission_set_hints_from_env():
+    """Env var path: absent permission_set_hints defaults to empty dict."""
+    config_dict = valid_config_dict(
+        secondary_fallback_email_domains_as_json=False,
+        permission_duration_list_override_as_json=False,
+    )
+    cfg = config.Config(**config_dict)
+    assert cfg.permission_set_hints == {}
+
+
 def test_error_channel_id_falls_back_to_slack_channel_id_when_unset():
     """When slack_error_channel_id is unset, operator errors fall back to the main request channel."""
     config_dict = valid_config_dict(
