@@ -2249,3 +2249,63 @@ class TestApprovalBlockedWhenRequesterBecameIneligible:
         """Otherwise the request wedges as 'already in progress' and nobody can deny it."""
         _, cache_after, _ = self._run(import_main)
         assert cache_after == {}
+
+
+class TestDuplicateRequestCacheReleasedOnFailure:
+    """A failure mid-handler must not leave the request marked as in progress.
+
+    cache_for_dublicate_requests is an in-flight marker: every completion path clears it.
+    An exception was the one path that did not, so the entry outlived the click in the warm
+    container and every later click on that request answered "already in progress". Deny was
+    blocked too, because the duplicate check runs before the action branch, so nobody could
+    clear the request until the container recycled.
+    """
+
+    def _payload(self):
+        import slack_helpers
+
+        return slack_helpers.ButtonClickedPayload.model_construct(
+            action=entities.ApproverAction.Approve,
+            approver_slack_id="U_APPROVER",
+            thread_ts="123.456",
+            channel_id="C12345",
+            message={"blocks": [{"block_id": "buttons"}]},
+            request=slack_helpers.RequestForAccess(
+                permission_set_name="TestPermissionSet",
+                account_id="111111111111",
+                reason="Testing",
+                requester_slack_id="U_REQUESTER",
+                permission_duration=timedelta(hours=1),
+            ),
+        )
+
+    def test_cache_is_released_when_the_handler_raises(self, import_main):
+        import slack_helpers
+
+        main_module = import_main
+        user_by_id = {
+            "U_REQUESTER": entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester"),
+            "U_APPROVER": entities.slack.User(id="U_APPROVER", email="approver@test.com", real_name="Approver"),
+        }
+
+        patches = [
+            patch.object(slack_helpers.ButtonClickedPayload, "model_validate", return_value=self._payload()),
+            patch.object(main_module.slack_helpers, "get_user", side_effect=lambda _client, id: user_by_id[id]),
+            patch.object(main_module.slack_helpers, "check_if_user_is_in_channel", return_value=True),
+            patch.object(
+                main_module.sso,
+                "get_permission_set",
+                side_effect=RuntimeError("sso-admin unavailable"),
+            ),
+        ]
+
+        for p in patches:
+            p.start()
+        try:
+            with pytest.raises(RuntimeError):
+                main_module.handle_button_click.__wrapped__(body={"foo": "bar"}, client=MagicMock(), context=MagicMock())
+            assert main_module.cache_for_dublicate_requests == {}
+        finally:
+            for p in patches:
+                p.stop()
+            main_module.cache_for_dublicate_requests.clear()
