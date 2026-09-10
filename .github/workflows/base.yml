@@ -59,6 +59,18 @@ jobs:
       - name: Run tests
         run: bash run-tests.sh
 
+      # The terraform_trivy pre-commit hook only scans Terraform and Dockerfiles, so a known-vulnerable
+      # Python package reached the Lambdas without anything failing. Scans the runtime set only
+      # (--no-dev, both lock files, matching how src/docker/Dockerfile.requester builds the image):
+      # a CVE in a test-only package is worth an upgrade but must not block a deploy.
+      - name: Scan runtime dependencies for known vulnerabilities
+        run: |
+          mkdir -p /tmp/runtime-scan
+          uv export --directory src --frozen --no-emit-workspace --no-dev --no-editable -o /tmp/src-runtime.txt
+          uv export --directory layer --frozen --no-emit-workspace --no-dev --no-editable -o /tmp/layer-runtime.txt
+          cat /tmp/src-runtime.txt /tmp/layer-runtime.txt > /tmp/runtime-scan/requirements.txt
+          trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --no-progress /tmp/runtime-scan
+
       - name: Show uncommitted changes
         if: always()
         run: |
