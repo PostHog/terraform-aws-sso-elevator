@@ -2208,7 +2208,6 @@ class TestApprovalBlockedWhenRequesterBecameIneligible:
                 "get_permission_set",
                 return_value=entities.aws.PermissionSet(name="TestPermissionSet", arn="arn:sso:ps/test", description=None),
             ),
-            patch.object(main_module.access_control, "get_requester_group_ids_if_needed", return_value=set()),
             patch.object(
                 main_module.access_control,
                 "make_decision_on_approve_request",

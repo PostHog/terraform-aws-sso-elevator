@@ -980,6 +980,44 @@ def find_approvers_in_slack(client: WebClient, approver_emails: list[str]) -> tu
     return approvers, approver_emails_not_found
 
 
+def build_pending_approval_text(client: WebClient, decision, cfg: "config.Config") -> tuple[str, str, str]:  # noqa: ANN001
+    """Channel text, DM text and status for a RequiresApproval decision.
+
+    Shared by the account and group flows: both resolve the same approvers the same way and
+    say the same thing about them. Keeping one copy is what stops the two flows drifting, which
+    is how the group flow ended up without the missing-approver handling in the first place.
+
+    A configured approver who left the company no longer exists in Slack and raises on lookup,
+    so approvers are resolved one at a time. An approver group can still action the request, so
+    the request only stops when nothing at all can approve it.
+
+    ``cfg`` is passed in rather than read from this module, so the status wording follows the
+    caller's configuration instead of whichever config this module happened to import.
+    """
+    approvers, approver_emails_not_found = find_approvers_in_slack(client, decision.approvers)
+    group_mentions = build_approver_group_mentions(decision.approver_groups)
+
+    if not approvers and not decision.approver_groups:
+        return (
+            "None of the approvers from configuration could be found in Slack. "
+            "Request cannot be processed. Please deny the request and check the module configuration.",
+            "Your request cannot be processed because none of the approvers from configuration "
+            "could be found in Slack. Please deny the request and check the module configuration.",
+            cfg.denied_status,
+        )
+
+    mention_approvers = " ".join(f"<@{approver.id}>" for approver in approvers)
+    all_mentions = " ".join(filter(None, [mention_approvers, group_mentions]))
+    text = f"{all_mentions} Request awaiting approval."
+    if approver_emails_not_found:
+        missing_emails = ", ".join(approver_emails_not_found)
+        text += (
+            f" Note: Some approvers ({missing_emails}) could not be found in Slack. "
+            "Please deny the request and check the module configuration."
+        )
+    return text, f"Your request is awaiting approval from {all_mentions}.", cfg.pending_status
+
+
 def get_usergroup_members(client: WebClient, usergroup_id: str) -> list[str]:
     """Get list of user IDs in a Slack usergroup.
 

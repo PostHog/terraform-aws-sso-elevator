@@ -14,7 +14,14 @@ import s3
 import schedule
 import sso
 from entities import BaseModel
-from statement import GroupStatement, Statement, get_affected_group_statements, get_affected_statements, get_eligible_statements_for_user
+from statement import (
+    GroupStatement,
+    Statement,
+    filter_eligible_statements,
+    get_affected_group_statements,
+    get_affected_statements,
+    restricts_group_membership,
+)
 
 logger = config.get_logger("access_control")
 cfg = config.get_config()
@@ -89,10 +96,7 @@ def make_decision_on_access_request(  # noqa: PLR0911, PLR0913
         approver_group_resolver: Function that resolves approver group IDs to Slack user IDs.
             Used for checking self-approval eligibility via group membership.
     """
-    # Filter statements by user's group membership eligibility if user_group_ids provided
-    # This is only applicable to Statement (not GroupStatement)
-    if user_group_ids is not None and isinstance(statements, frozenset) and all(isinstance(s, Statement) for s in statements):
-        statements = get_eligible_statements_for_user(statements, user_group_ids)  # type: ignore # noqa: PGH003
+    statements = filter_eligible_statements(statements, user_group_ids)
 
     affected_statements = determine_affected_statements(statements, account_id, permission_set_name, group_id, permission_set_arn)
 
@@ -194,38 +198,6 @@ class ExecuteDecisionResult(BaseModel):
     can_extend_expired_grant: bool = False
 
 
-def get_requester_group_ids_if_needed(
-    statements: FrozenSet[Statement] | FrozenSet[GroupStatement],
-    requester_email: str,
-) -> set[str] | None:
-    """Resolve the requester's SSO group IDs, but only when some statement restricts membership.
-
-    Returns None when no statement uses required_group_membership. That tells
-    make_decision_on_approve_request to skip the eligibility re-check, so deployments that do
-    not use the feature pay no Identity Center calls on every button click.
-
-    Lookup errors propagate on purpose. Returning an empty set instead would be
-    indistinguishable from "the requester is in no groups", which quietly widens access.
-    """
-    if not any(getattr(s, "required_group_membership", frozenset()) for s in statements):
-        return None
-
-    identity_store_id = sso.get_identity_store_id(cfg, sso_client)
-    user_principal_id, _ = sso.get_user_principal_id_by_email(
-        identity_store_client=identitystore_client,
-        identity_store_id=identity_store_id,
-        email=requester_email,
-        cfg=cfg,
-    )
-    return set(
-        sso.get_user_group_ids(
-            identity_store_client=identitystore_client,
-            identity_store_id=identity_store_id,
-            user_principal_id=user_principal_id,
-        )
-    )
-
-
 def make_decision_on_approve_request(  # noqa: PLR0913
     action: entities.ApproverAction,
     statements: frozenset[Statement],
@@ -237,7 +209,7 @@ def make_decision_on_approve_request(  # noqa: PLR0913
     permission_set_arn: str | None = None,
     approver_slack_id: str | None = None,
     approver_group_resolver: Callable[[frozenset[str]], set[str]] | None = None,
-    requester_group_ids: set[str] | None = None,
+    requester_group_resolver: Callable[[], set[str]] | None = None,
 ) -> ApproveRequestDecision:
     """Make a decision on an approval request.
 
@@ -254,7 +226,9 @@ def make_decision_on_approve_request(  # noqa: PLR0913
         approver_group_resolver: Function that resolves approver group IDs to Slack user IDs.
             Takes a frozenset of group IDs and returns a set of Slack user IDs.
             Resolution is done per-statement to prevent cross-statement authorization bypass.
-        requester_group_ids: SSO group IDs the requester belongs to right now.
+        requester_group_resolver: Returns the SSO group IDs the requester belongs to right now.
+            Called at most once, and only when approving a statement that restricts membership,
+            so no Identity Center call is made when the answer could not change the outcome.
             If None, eligibility is not re-checked and the old behaviour is kept.
     """
     all_affected = determine_affected_statements(statements, account_id, permission_set_name, group_id, permission_set_arn)
@@ -265,12 +239,8 @@ def make_decision_on_approve_request(  # noqa: PLR0913
     # available, otherwise a request whose requester lost eligibility could never be cleared.
     affected_statements = all_affected
     requester_ineligible = False
-    if (
-        action == entities.ApproverAction.Approve
-        and requester_group_ids is not None
-        and all(isinstance(s, Statement) for s in all_affected)
-    ):
-        affected_statements = get_eligible_statements_for_user(all_affected, requester_group_ids)  # type: ignore # noqa: PGH003
+    if action == entities.ApproverAction.Approve and requester_group_resolver is not None and restricts_group_membership(all_affected):
+        affected_statements = filter_eligible_statements(all_affected, requester_group_resolver())
         requester_ineligible = bool(all_affected) and not affected_statements
 
     for statement in affected_statements:

@@ -1904,6 +1904,31 @@ def test_rollback_alert_posts_to_error_channel():
     assert mock_slack.chat_postMessage.call_args.kwargs["channel"] == "C_ERR"
 
 
+def _account_statement(required_group_membership=()) -> Statement:
+    """An account statement for 111111111111 / AdministratorAccess, approved by approver@example.com."""
+    return Statement.model_validate(
+        {
+            "resource_type": "Account",
+            "resource": ["111111111111"],
+            "permission_set": ["AdministratorAccess"],
+            "approvers": ["approver@example.com"],
+            "required_group_membership": list(required_group_membership),
+        }
+    )
+
+
+def _decide_on_approve(action, statements, requester_group_resolver=None):
+    return make_decision_on_approve_request(
+        action=action,
+        statements=statements,
+        account_id="111111111111",
+        permission_set_name="AdministratorAccess",
+        approver_email="approver@example.com",
+        requester_email="requester@example.com",
+        requester_group_resolver=requester_group_resolver,
+    )
+
+
 class TestRequesterEligibilityAtApprovalTime:
     """Eligibility is re-checked when the approver clicks, not only when the request is made.
 
@@ -1912,141 +1937,83 @@ class TestRequesterEligibilityAtApprovalTime:
     requester is no longer entitled to. The submission-time gate cannot see that change.
     """
 
-    def _statements(self):
-        return frozenset(
-            [
-                Statement.model_validate(
-                    {
-                        "resource_type": "Account",
-                        "resource": ["111111111111"],
-                        "permission_set": ["AdministratorAccess"],
-                        "approvers": ["approver@example.com"],
-                        "required_group_membership": ["admin-group"],
-                    }
-                )
-            ]
-        )
-
-    def _decide(self, action, requester_group_ids):
-        return make_decision_on_approve_request(
-            action=action,
-            statements=self._statements(),
-            account_id="111111111111",
-            permission_set_name="AdministratorAccess",
-            approver_email="approver@example.com",
-            requester_email="requester@example.com",
-            requester_group_ids=requester_group_ids,
-        )
+    RESTRICTED = frozenset([_account_statement(["admin-group"])])
 
     def test_approval_denied_when_requester_left_the_required_group(self):
-        decision = self._decide(entities.ApproverAction.Approve, requester_group_ids=set())
+        decision = _decide_on_approve(entities.ApproverAction.Approve, self.RESTRICTED, lambda: set())
         assert decision.grant is False
         assert decision.requester_ineligible is True
 
     def test_approval_still_granted_while_requester_remains_eligible(self):
-        decision = self._decide(entities.ApproverAction.Approve, requester_group_ids={"admin-group"})
+        decision = _decide_on_approve(entities.ApproverAction.Approve, self.RESTRICTED, lambda: {"admin-group"})
         assert decision.grant is True
         assert decision.requester_ineligible is False
 
     def test_deny_still_permitted_for_an_ineligible_requester(self):
         """Otherwise a request whose requester lost eligibility could never be cleared."""
-        decision = self._decide(entities.ApproverAction.Deny, requester_group_ids=set())
+        decision = _decide_on_approve(entities.ApproverAction.Deny, self.RESTRICTED, lambda: set())
         assert decision.permit is True
         assert decision.grant is False
 
-    def test_eligibility_not_checked_when_group_ids_are_unknown(self):
+    def test_eligibility_not_checked_when_no_resolver_is_given(self):
         """Callers that pass nothing keep the old behaviour, so unrelated flows are unaffected."""
-        decision = self._decide(entities.ApproverAction.Approve, requester_group_ids=None)
+        decision = _decide_on_approve(entities.ApproverAction.Approve, self.RESTRICTED, None)
+        assert decision.grant is True
+        assert decision.requester_ineligible is False
+
+    def test_unrestricted_statement_still_allows_approval(self):
+        """Filtering drops only the statements the requester fails; another may grant on its own."""
+        statements = frozenset([_account_statement(["admin-group"]), _account_statement()])
+        decision = _decide_on_approve(entities.ApproverAction.Approve, statements, lambda: set())
         assert decision.grant is True
         assert decision.requester_ineligible is False
 
 
-class TestResolvingRequesterGroupIdsForApproval:
-    """The approval path only pays for an Identity Center lookup when a statement needs one."""
+class TestRequesterLookupIsAvoidedWhenItCannotMatter:
+    """The resolver reaches Identity Center, so it must not run when its answer is unusable.
 
-    def _statement(self, required_group_membership):
-        return Statement.model_validate(
+    Resolving a user costs a full directory listing plus a memberships call. Deployments that
+    do not restrict membership, and clicks that cannot act on the answer, must pay neither.
+    """
+
+    def _resolver(self):
+        resolver = MagicMock(return_value=set())
+        return resolver
+
+    def test_not_called_when_no_statement_restricts_membership(self):
+        resolver = self._resolver()
+        decision = _decide_on_approve(entities.ApproverAction.Approve, frozenset([_account_statement()]), resolver)
+        resolver.assert_not_called()
+        assert decision.grant is True
+
+    def test_not_called_when_denying(self):
+        """Deny ignores eligibility, so the lookup would be discarded."""
+        resolver = self._resolver()
+        _decide_on_approve(entities.ApproverAction.Deny, frozenset([_account_statement(["admin-group"])]), resolver)
+        resolver.assert_not_called()
+
+    def test_not_called_when_no_statement_matches_the_request(self):
+        """A statement for another account cannot be affected, so its restriction is irrelevant."""
+        other_account = Statement.model_validate(
             {
                 "resource_type": "Account",
-                "resource": ["111111111111"],
+                "resource": ["222222222222"],
                 "permission_set": ["AdministratorAccess"],
                 "approvers": ["approver@example.com"],
-                "required_group_membership": required_group_membership,
+                "required_group_membership": ["admin-group"],
             }
         )
+        resolver = self._resolver()
+        _decide_on_approve(entities.ApproverAction.Approve, frozenset([other_account]), resolver)
+        resolver.assert_not_called()
 
-    def test_returns_none_and_skips_lookup_when_no_statement_restricts_membership(self):
-        import access_control
-
-        with patch.object(access_control.sso, "get_identity_store_id") as get_identity_store_id:
-            result = access_control.get_requester_group_ids_if_needed(frozenset([self._statement([])]), "requester@example.com")
-        assert result is None
-        get_identity_store_id.assert_not_called()
-
-    def test_returns_group_ids_when_a_statement_restricts_membership(self):
-        import access_control
-
-        with (
-            patch.object(access_control.sso, "get_identity_store_id", return_value="d-123456"),
-            patch.object(access_control.sso, "get_user_principal_id_by_email", return_value=("principal-id", None)),
-            patch.object(access_control.sso, "get_user_group_ids", return_value={"admin-group"}),
-        ):
-            result = access_control.get_requester_group_ids_if_needed(
-                frozenset([self._statement(["admin-group"])]), "requester@example.com"
-            )
-        assert result == {"admin-group"}
+    def test_called_once_when_the_answer_is_needed(self):
+        resolver = MagicMock(return_value={"admin-group"})
+        _decide_on_approve(entities.ApproverAction.Approve, frozenset([_account_statement(["admin-group"])]), resolver)
+        resolver.assert_called_once_with()
 
     def test_lookup_failure_propagates_so_it_is_never_read_as_no_groups(self):
         """Swallowing the error would turn a failed lookup into a silent grant of restricted access."""
-        import access_control
-
-        with (
-            patch.object(access_control.sso, "get_identity_store_id", return_value="d-123456"),
-            patch.object(access_control.sso, "get_user_principal_id_by_email", side_effect=RuntimeError("boom")),
-            pytest.raises(RuntimeError),
-        ):
-            access_control.get_requester_group_ids_if_needed(frozenset([self._statement(["admin-group"])]), "requester@example.com")
-
-
-class TestPartialEligibilityAtApprovalTime:
-    """An unrestricted statement still entitles the requester on its own.
-
-    Filtering removes only the statements the requester no longer qualifies for. If another
-    affected statement carries no required_group_membership, that statement grants the access
-    by itself, so the approval proceeds and requester_ineligible stays False.
-    """
-
-    def test_unrestricted_statement_still_allows_approval(self):
-        statements = frozenset(
-            [
-                Statement.model_validate(
-                    {
-                        "resource_type": "Account",
-                        "resource": ["111111111111"],
-                        "permission_set": ["AdministratorAccess"],
-                        "approvers": ["approver@example.com"],
-                        "required_group_membership": ["admin-group"],
-                    }
-                ),
-                Statement.model_validate(
-                    {
-                        "resource_type": "Account",
-                        "resource": ["111111111111"],
-                        "permission_set": ["AdministratorAccess"],
-                        "approvers": ["approver@example.com"],
-                        "required_group_membership": [],
-                    }
-                ),
-            ]
-        )
-        decision = make_decision_on_approve_request(
-            action=entities.ApproverAction.Approve,
-            statements=statements,
-            account_id="111111111111",
-            permission_set_name="AdministratorAccess",
-            approver_email="approver@example.com",
-            requester_email="requester@example.com",
-            requester_group_ids=set(),
-        )
-        assert decision.grant is True
-        assert decision.requester_ineligible is False
+        resolver = MagicMock(side_effect=RuntimeError("identity store unavailable"))
+        with pytest.raises(RuntimeError):
+            _decide_on_approve(entities.ApproverAction.Approve, frozenset([_account_statement(["admin-group"])]), resolver)

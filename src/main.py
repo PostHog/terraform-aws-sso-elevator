@@ -338,10 +338,11 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
 
         is_self_cancel = payload.approver_slack_id == payload.request.requester_slack_id and payload.action == entities.ApproverAction.Deny
 
-        # Resolved fresh on every click: the request may have been pending long enough for the
-        # requester to leave the group that made them eligible. Returns None, and costs no API
-        # calls, when no statement uses required_group_membership.
-        requester_group_ids = access_control.get_requester_group_ids_if_needed(cfg.statements, requester.email)
+        # Resolved fresh, and only if the decision actually needs it: the request may have been
+        # pending long enough for the requester to leave the group that made them eligible, so a
+        # membership snapshot taken at submission time cannot be trusted here.
+        def requester_group_resolver() -> set[str]:
+            return sso.get_group_ids_for_email(identity_store_client, sso_client, cfg, requester.email)
 
         decision = access_control.make_decision_on_approve_request(
             action=payload.action,
@@ -353,7 +354,7 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
             permission_set_arn=permission_set.arn,
             approver_slack_id=approver.id,
             approver_group_resolver=approver_group_resolver,
-            requester_group_ids=requester_group_ids,
+            requester_group_resolver=requester_group_resolver,
         )
         logger.info("Decision on request was made", extra={"decision": decision.dict()})
 
@@ -650,34 +651,7 @@ def _process_single_access_request(  # noqa: PLR0915, PLR0912
             dm_text = "Self-approval is allowed and you are an approver. Your request will be approved automatically."
             status_text = cfg.granted_status
         case access_control.DecisionReason.RequiresApproval:
-            approvers, approver_emails_not_found = slack_helpers.find_approvers_in_slack(
-                client,
-                decision.approvers,  # type: ignore # noqa: PGH003
-            )
-            group_mentions = slack_helpers.build_approver_group_mentions(decision.approver_groups)
-
-            if not approvers and not decision.approver_groups:
-                text = """
-                None of the approvers from configuration could be found in Slack.
-                Request cannot be processed. Please deny the request and check the module configuration.
-                """
-                dm_text = """
-                Your request cannot be processed because none of the approvers from configuration could be found in Slack.
-                Please deny the request and check the module configuration.
-                """
-                status_text = cfg.denied_status
-            else:
-                mention_approvers = " ".join(f"<@{approver.id}>" for approver in approvers)
-                all_mentions = " ".join(filter(None, [mention_approvers, group_mentions]))
-                text = f"{all_mentions} Request awaiting approval."
-                if approver_emails_not_found:
-                    missing_emails = ", ".join(approver_emails_not_found)
-                    text += f"""
-                    Note: Some approvers ({missing_emails}) could not be found in Slack.
-                    Please deny the request and check the module configuration.
-                    """
-                dm_text = f"Your request is awaiting approval from {all_mentions}."
-                status_text = cfg.pending_status
+            text, dm_text, status_text = slack_helpers.build_pending_approval_text(client, decision, cfg)
         case access_control.DecisionReason.NoApprovers:
             text = "Nobody can approve this request."
             dm_text = "Nobody can approve this request."
