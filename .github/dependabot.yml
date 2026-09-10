@@ -1,6 +1,6 @@
 version: 2
 updates:
-  - package-ecosystem: "poetry"
+  - package-ecosystem: "uv"
     cooldown:
       default-days: 7
     directory: "/src"
@@ -13,7 +13,7 @@ updates:
       - "python"
       - "src"
 
-  - package-ecosystem: "poetry"
+  - package-ecosystem: "uv"
     cooldown:
       default-days: 7
     directory: "/layer"
