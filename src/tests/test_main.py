@@ -2158,3 +2158,94 @@ class TestPermissionSetHintThreadReply:
         assert posted["n"] > 1, "hint post was never attempted"
         discard.assert_called_once()
         renotify.assert_called_once()
+
+
+class TestApprovalBlockedWhenRequesterBecameIneligible:
+    """An approver must not be able to grant access the requester no longer qualifies for.
+
+    A pending request outlives group membership. When the requester leaves the group named by
+    required_group_membership, the decision layer reports requester_ineligible and the handler
+    has to stop before granting, with a message that explains why rather than the generic
+    "you cannot approve this request".
+    """
+
+    REQUESTER_ID = "U_REQUESTER"
+    APPROVER_ID = "U_APPROVER"
+
+    def _payload(self):
+        import slack_helpers
+
+        return slack_helpers.ButtonClickedPayload.model_construct(
+            action=entities.ApproverAction.Approve,
+            approver_slack_id=self.APPROVER_ID,
+            thread_ts="123.456",
+            channel_id="C12345",
+            message={"blocks": [{"block_id": "buttons"}]},
+            request=slack_helpers.RequestForAccess(
+                permission_set_name="TestPermissionSet",
+                account_id="111111111111",
+                reason="Testing",
+                requester_slack_id=self.REQUESTER_ID,
+                permission_duration=timedelta(hours=1),
+            ),
+        )
+
+    def _run(self, main_module):
+        import access_control
+        import slack_helpers
+
+        user_by_id = {
+            self.REQUESTER_ID: entities.slack.User(id=self.REQUESTER_ID, email="requester@test.com", real_name="Requester"),
+            self.APPROVER_ID: entities.slack.User(id=self.APPROVER_ID, email="approver@test.com", real_name="Approver"),
+        }
+
+        patches = [
+            patch.object(slack_helpers.ButtonClickedPayload, "model_validate", return_value=self._payload()),
+            patch.object(main_module.slack_helpers, "get_user", side_effect=lambda _client, id: user_by_id[id]),
+            patch.object(main_module.slack_helpers, "check_if_user_is_in_channel", return_value=True),
+            patch.object(
+                main_module.sso,
+                "get_permission_set",
+                return_value=entities.aws.PermissionSet(name="TestPermissionSet", arn="arn:sso:ps/test", description=None),
+            ),
+            patch.object(main_module.access_control, "get_requester_group_ids_if_needed", return_value=set()),
+            patch.object(
+                main_module.access_control,
+                "make_decision_on_approve_request",
+                return_value=access_control.ApproveRequestDecision(
+                    grant=False,
+                    permit=False,
+                    based_on_statements=frozenset(),
+                    requester_ineligible=True,
+                ),
+            ),
+            patch.object(main_module.access_control, "execute_decision"),
+            patch.object(main_module.analytics, "capture"),
+        ]
+
+        mock_client = MagicMock()
+        for p in patches:
+            p.start()
+        try:
+            main_module.handle_button_click.__wrapped__(body={"foo": "bar"}, client=mock_client, context=MagicMock())
+            cache_after = dict(main_module.cache_for_dublicate_requests)
+            execute_decision = main_module.access_control.execute_decision
+            return mock_client, cache_after, execute_decision
+        finally:
+            for p in patches:
+                p.stop()
+            main_module.cache_for_dublicate_requests.clear()
+
+    def test_grants_nothing(self, import_main):
+        _, _, execute_decision = self._run(import_main)
+        execute_decision.assert_not_called()
+
+    def test_explains_that_the_requester_lost_eligibility(self, import_main):
+        mock_client, _, _ = self._run(import_main)
+        texts = [c.kwargs.get("text", "") for c in mock_client.chat_postMessage.call_args_list]
+        assert any("no longer" in t for t in texts), texts
+
+    def test_clears_the_duplicate_request_cache(self, import_main):
+        """Otherwise the request wedges as 'already in progress' and nobody can deny it."""
+        _, cache_after, _ = self._run(import_main)
+        assert cache_after == {}

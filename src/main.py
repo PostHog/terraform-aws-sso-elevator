@@ -338,6 +338,11 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
 
     is_self_cancel = payload.approver_slack_id == payload.request.requester_slack_id and payload.action == entities.ApproverAction.Deny
 
+    # Resolved fresh on every click: the request may have been pending long enough for the
+    # requester to leave the group that made them eligible. Returns None, and costs no API
+    # calls, when no statement uses required_group_membership.
+    requester_group_ids = access_control.get_requester_group_ids_if_needed(cfg.statements, requester.email)
+
     decision = access_control.make_decision_on_approve_request(
         action=payload.action,
         statements=cfg.statements,
@@ -348,8 +353,22 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
         permission_set_arn=permission_set.arn,
         approver_slack_id=approver.id,
         approver_group_resolver=approver_group_resolver,
+        requester_group_ids=requester_group_ids,
     )
     logger.info("Decision on request was made", extra={"decision": decision.dict()})
+
+    # Checked before the generic permit check below, which would otherwise tell a legitimate
+    # approver "you cannot approve this request" and leave them guessing at the reason.
+    if decision.requester_ineligible:
+        cache_for_dublicate_requests.clear()
+        return client.chat_postMessage(
+            channel=payload.channel_id,
+            text=(
+                f"<@{approver.id}> This request can no longer be approved: <@{requester.id}> is no longer a member "
+                f"of a group required for this access. Please deny the request."
+            ),
+            thread_ts=payload.thread_ts,
+        )
 
     if not decision.permit and not is_self_cancel:
         cache_for_dublicate_requests.clear()

@@ -526,3 +526,143 @@ class TestAlreadyHandledGroupRequest:
     def test_grants_nothing(self, import_group):
         _, execute_decision = self._run(import_group, entities.ApproverAction.Approve)
         execute_decision.assert_not_called()
+
+
+class TestGroupApproversMissingFromSlack:
+    """A configured approver who no longer exists in Slack must not break a group request.
+
+    Regression: handle_request_for_group_access_submittion resolved approvers with a bare
+    list comprehension over get_user_by_email, which raises when Slack has no such user.
+    @handle_errors then swallowed the exception, so one departed approver turned every group
+    access request into a generic failure. The account flow in main.py already used
+    find_approvers_in_slack; the group flow never got the same fix.
+    """
+
+    def _body(self):
+        return {"user": {"id": "U_REQUESTER"}, "view": {}}
+
+    def _parsed_request(self):
+        import slack_helpers
+
+        return slack_helpers.RequestForGroupAccess(
+            group_id="11111111-2222-3333-4444-555555555555",
+            reason="Testing",
+            requester_slack_id="U_REQUESTER",
+            permission_duration=timedelta(hours=1),
+        )
+
+    def _decision(self, approvers=frozenset(), approver_groups=frozenset()):
+        import access_control
+
+        return access_control.AccessRequestDecision(
+            grant=False,
+            reason=access_control.DecisionReason.RequiresApproval,
+            based_on_statements=frozenset(),
+            approvers=approvers,
+            approver_groups=approver_groups,
+        )
+
+    def _run(self, group_module, decision, known_emails):
+        """Drive the submission handler with only `known_emails` resolvable in Slack."""
+        import access_control
+        from slack_sdk.errors import SlackApiError
+
+        def lookup(_client, email):
+            if email in known_emails:
+                return entities.slack.User(id=known_emails[email], email=email, real_name=email)
+            raise SlackApiError("users_not_found", MagicMock())
+
+        sso_group = entities.aws.SSOGroup(
+            name="test-group",
+            id="11111111-2222-3333-4444-555555555555",
+            description=None,
+            identity_store_id="d-123456",
+        )
+
+        patches = [
+            patch.object(group_module.slack_helpers.RequestForGroupAccessView, "parse", return_value=self._parsed_request()),
+            patch.object(
+                group_module.slack_helpers,
+                "get_user",
+                return_value=entities.slack.User(id="U_REQUESTER", email="requester@test.com", real_name="Requester"),
+            ),
+            patch.object(group_module.slack_helpers, "get_user_by_email", side_effect=lookup),
+            patch.object(group_module.slack_helpers, "check_if_user_is_in_channel", return_value=True),
+            patch.object(group_module.slack_helpers, "build_approval_request_message_blocks", return_value=[]),
+            patch.object(
+                group_module.slack_helpers,
+                "build_approver_group_mentions",
+                side_effect=lambda group_ids: " ".join(f"<!subteam^{g}>" for g in group_ids),
+            ),
+            patch.object(group_module.slack_helpers.HeaderSectionBlock, "set_status", return_value=[]),
+            patch.object(group_module.sso, "describe_group", return_value=sso_group),
+            patch.object(group_module.access_control, "make_decision_on_access_request", return_value=decision),
+            patch.object(
+                group_module.access_control,
+                "execute_decision_on_group_request",
+                return_value=access_control.ExecuteDecisionResult(granted=False),
+            ),
+            patch.object(group_module.analytics, "capture"),
+            patch.object(group_module.schedule, "schedule_discard_buttons_event"),
+            patch.object(group_module.schedule, "schedule_approver_notification_event"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat_postMessage.return_value = {"ts": "123.456", "message": {"blocks": []}}
+
+        for p in patches:
+            p.start()
+        try:
+            # Call the undecorated function to bypass @handle_errors' try/except swallow.
+            group_module.handle_request_for_group_access_submittion.__wrapped__(
+                body=self._body(),
+                ack=MagicMock(),
+                client=mock_client,
+                context=MagicMock(),
+            )
+            status_text = group_module.slack_helpers.HeaderSectionBlock.set_status.call_args.kwargs["status_text"]
+        finally:
+            for p in patches:
+                p.stop()
+
+        thread_text = mock_client.chat_postMessage.call_args_list[-1].kwargs["text"]
+        return thread_text, status_text
+
+    def test_request_survives_when_one_approver_is_gone(self, import_group):
+        """The approvers Slack still knows must be mentioned instead of the request failing."""
+        text, status = self._run(
+            import_group,
+            self._decision(approvers=frozenset({"found@test.com", "gone@test.com"})),
+            known_emails={"found@test.com": "U_FOUND"},
+        )
+        assert "<@U_FOUND>" in text
+        assert status == "Pending"
+
+    def test_missing_approver_is_named_so_config_can_be_fixed(self, import_group):
+        """The thread must say which approver could not be resolved."""
+        text, _ = self._run(
+            import_group,
+            self._decision(approvers=frozenset({"found@test.com", "gone@test.com"})),
+            known_emails={"found@test.com": "U_FOUND"},
+        )
+        assert "gone@test.com" in text
+
+    def test_no_approvers_resolvable_marks_request_denied(self, import_group):
+        """With nobody left to approve, the request must stop rather than sit pending forever."""
+        text, status = self._run(
+            import_group,
+            self._decision(approvers=frozenset({"gone@test.com"})),
+            known_emails={},
+        )
+        assert "None of the approvers from configuration could be found in Slack" in text
+        assert status == "Denied"
+
+    def test_approver_group_keeps_request_alive_when_every_email_is_gone(self, import_group):
+        """An approver group can still action the request, so it must stay pending."""
+        text, status = self._run(
+            import_group,
+            self._decision(approvers=frozenset({"gone@test.com"}), approver_groups=frozenset({"S_GROUP"})),
+            known_emails={},
+        )
+        assert "<!subteam^S_GROUP>" in text
+        assert status == "Pending"

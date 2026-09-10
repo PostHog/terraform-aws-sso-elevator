@@ -112,7 +112,7 @@ def _handle_group_selection_impl(body: dict, client: WebClient) -> SlackResponse
 
 
 @handle_errors
-def handle_request_for_group_access_submittion(  # noqa: PLR0915
+def handle_request_for_group_access_submittion(  # noqa: PLR0912, PLR0915
     body: dict,
     ack: Ack,  # noqa: ARG001
     client: WebClient,
@@ -201,13 +201,37 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
             dm_text = "Self-approval is allowed and you are an approver. Your request will be approved automatically."
             status_text = cfg.granted_status
         case access_control.DecisionReason.RequiresApproval:
-            approvers = [slack_helpers.get_user_by_email(client, email) for email in decision.approvers]
-            mention_approvers = " ".join(f"<@{approver.id}>" for approver in approvers)
+            # Resolve approvers one by one: a configured approver who left the company no longer
+            # exists in Slack, and looking them up raises. Resolving the whole list eagerly turned
+            # one departed approver into a generic failure for the entire request.
+            approvers, approver_emails_not_found = slack_helpers.find_approvers_in_slack(
+                client,
+                decision.approvers,  # type: ignore # noqa: PGH003
+            )
             group_mentions = slack_helpers.build_approver_group_mentions(decision.approver_groups)
-            all_mentions = " ".join(filter(None, [mention_approvers, group_mentions]))
-            text = f"{all_mentions} Request awaiting approval."
-            dm_text = f"Your request is awaiting approval from {all_mentions}."
-            status_text = cfg.pending_status
+
+            if not approvers and not decision.approver_groups:
+                text = """
+                None of the approvers from configuration could be found in Slack.
+                Request cannot be processed. Please deny the request and check the module configuration.
+                """
+                dm_text = """
+                Your request cannot be processed because none of the approvers from configuration could be found in Slack.
+                Please deny the request and check the module configuration.
+                """
+                status_text = cfg.denied_status
+            else:
+                mention_approvers = " ".join(f"<@{approver.id}>" for approver in approvers)
+                all_mentions = " ".join(filter(None, [mention_approvers, group_mentions]))
+                text = f"{all_mentions} Request awaiting approval."
+                if approver_emails_not_found:
+                    missing_emails = ", ".join(approver_emails_not_found)
+                    text += f"""
+                    Note: Some approvers ({missing_emails}) could not be found in Slack.
+                    Please deny the request and check the module configuration.
+                    """
+                dm_text = f"Your request is awaiting approval from {all_mentions}."
+                status_text = cfg.pending_status
         case access_control.DecisionReason.NoApprovers:
             text = "Nobody can approve this request."
             dm_text = "Nobody can approve this request."
