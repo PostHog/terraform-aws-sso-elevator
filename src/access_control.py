@@ -14,7 +14,14 @@ import s3
 import schedule
 import sso
 from entities import BaseModel
-from statement import GroupStatement, Statement, get_affected_group_statements, get_affected_statements, get_eligible_statements_for_user
+from statement import (
+    GroupStatement,
+    Statement,
+    filter_eligible_statements,
+    get_affected_group_statements,
+    get_affected_statements,
+    restricts_group_membership,
+)
 
 logger = config.get_logger("access_control")
 cfg = config.get_config()
@@ -89,10 +96,7 @@ def make_decision_on_access_request(  # noqa: PLR0911, PLR0913
         approver_group_resolver: Function that resolves approver group IDs to Slack user IDs.
             Used for checking self-approval eligibility via group membership.
     """
-    # Filter statements by user's group membership eligibility if user_group_ids provided
-    # This is only applicable to Statement (not GroupStatement)
-    if user_group_ids is not None and isinstance(statements, frozenset) and all(isinstance(s, Statement) for s in statements):
-        statements = get_eligible_statements_for_user(statements, user_group_ids)  # type: ignore # noqa: PGH003
+    statements = filter_eligible_statements(statements, user_group_ids)
 
     affected_statements = determine_affected_statements(statements, account_id, permission_set_name, group_id, permission_set_arn)
 
@@ -169,6 +173,7 @@ class ApproveRequestDecision(BaseModel):
     grant: bool
     permit: bool
     based_on_statements: FrozenSet[Statement] | FrozenSet[GroupStatement]
+    requester_ineligible: bool = False
 
 
 class ExecuteDecisionResult(BaseModel):
@@ -204,6 +209,7 @@ def make_decision_on_approve_request(  # noqa: PLR0913
     permission_set_arn: str | None = None,
     approver_slack_id: str | None = None,
     approver_group_resolver: Callable[[frozenset[str]], set[str]] | None = None,
+    requester_group_resolver: Callable[[], set[str]] | None = None,
 ) -> ApproveRequestDecision:
     """Make a decision on an approval request.
 
@@ -220,8 +226,22 @@ def make_decision_on_approve_request(  # noqa: PLR0913
         approver_group_resolver: Function that resolves approver group IDs to Slack user IDs.
             Takes a frozenset of group IDs and returns a set of Slack user IDs.
             Resolution is done per-statement to prevent cross-statement authorization bypass.
+        requester_group_resolver: Returns the SSO group IDs the requester belongs to right now.
+            Called at most once, and only when approving a statement that restricts membership,
+            so no Identity Center call is made when the answer could not change the outcome.
+            If None, eligibility is not re-checked and the old behaviour is kept.
     """
-    affected_statements = determine_affected_statements(statements, account_id, permission_set_name, group_id, permission_set_arn)
+    all_affected = determine_affected_statements(statements, account_id, permission_set_name, group_id, permission_set_arn)
+
+    # Re-check the requester's eligibility at approval time, not only at submission time. A pending
+    # request outlives the group membership that allowed it, so the submission gate cannot see a
+    # requester who left the group in the meantime. Only Approve is filtered: Deny must stay
+    # available, otherwise a request whose requester lost eligibility could never be cleared.
+    affected_statements = all_affected
+    requester_ineligible = False
+    if action == entities.ApproverAction.Approve and requester_group_resolver is not None and restricts_group_membership(all_affected):
+        affected_statements = filter_eligible_statements(all_affected, requester_group_resolver())
+        requester_ineligible = bool(all_affected) and not affected_statements
 
     for statement in affected_statements:
         is_individual_approver = approver_email in statement.approvers
@@ -246,6 +266,7 @@ def make_decision_on_approve_request(  # noqa: PLR0913
         grant=False,
         permit=False,
         based_on_statements=affected_statements,  # type: ignore # noqa: PGH003
+        requester_ineligible=requester_ineligible,
     )
 
 

@@ -80,6 +80,31 @@ def get_eligible_statements_for_user(statements: FrozenSet[Statement], user_grou
     return frozenset(s for s in statements if is_statement_eligible_for_user(s, user_group_ids))
 
 
+def restricts_group_membership(statements: FrozenSet["Statement"] | FrozenSet["GroupStatement"]) -> bool:
+    """Whether any statement limits who may use it by SSO group membership.
+
+    False for group statements, which have no required_group_membership field. Callers use this
+    to skip an Identity Center lookup whose result could not change the outcome.
+    """
+    return any(getattr(s, "required_group_membership", frozenset()) for s in statements)
+
+
+def filter_eligible_statements(
+    statements: FrozenSet["Statement"] | FrozenSet["GroupStatement"],
+    user_group_ids: set[str] | None,
+) -> FrozenSet["Statement"] | FrozenSet["GroupStatement"]:
+    """Drop statements whose required_group_membership the user does not satisfy.
+
+    Returns the input unchanged when ``user_group_ids`` is None (caller has no membership
+    information, so the old unfiltered behaviour stands) or when the statements are group
+    statements, which carry no membership restriction. One place to change when group
+    statements gain the field.
+    """
+    if user_group_ids is None or not all(isinstance(s, Statement) for s in statements):
+        return statements
+    return get_eligible_statements_for_user(statements, user_group_ids)  # type: ignore # noqa: PGH003
+
+
 def get_accounts_for_user(statements: FrozenSet[Statement], user_group_ids: set[str]) -> set[str]:
     """Return account IDs the user can request access to based on eligible statements."""
     eligible_statements = get_eligible_statements_for_user(statements, user_group_ids)

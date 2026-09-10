@@ -625,6 +625,32 @@ def is_user_in_group(identity_store_id: str, group_id: str, sso_user_id: str, id
     return None
 
 
+def get_group_ids_for_email(
+    identity_store_client: IdentityStoreClient,
+    sso_client: SSOAdminClient,
+    cfg: "config.Config",
+    email: str,
+) -> set[str]:
+    """SSO group IDs for a user, resolved from their email in one call.
+
+    Wraps the identity store -> principal -> memberships sequence that every caller needs and
+    none should have to repeat. Errors propagate: an empty set would be indistinguishable from
+    "member of no groups", which quietly widens access wherever the result gates eligibility.
+    """
+    identity_store_id = get_identity_store_id(cfg, sso_client)
+    user_principal_id, _ = get_user_principal_id_by_email(
+        identity_store_client=identity_store_client,
+        identity_store_id=identity_store_id,
+        email=email,
+        cfg=cfg,
+    )
+    return get_user_group_ids(
+        identity_store_client=identity_store_client,
+        identity_store_id=identity_store_id,
+        user_principal_id=user_principal_id,
+    )
+
+
 def get_user_group_ids(identity_store_client: IdentityStoreClient, identity_store_id: str, user_principal_id: str) -> set[str]:
     """Get all group IDs that a user is a member of.
 

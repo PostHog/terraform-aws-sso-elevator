@@ -201,13 +201,7 @@ def handle_request_for_group_access_submittion(  # noqa: PLR0915
             dm_text = "Self-approval is allowed and you are an approver. Your request will be approved automatically."
             status_text = cfg.granted_status
         case access_control.DecisionReason.RequiresApproval:
-            approvers = [slack_helpers.get_user_by_email(client, email) for email in decision.approvers]
-            mention_approvers = " ".join(f"<@{approver.id}>" for approver in approvers)
-            group_mentions = slack_helpers.build_approver_group_mentions(decision.approver_groups)
-            all_mentions = " ".join(filter(None, [mention_approvers, group_mentions]))
-            text = f"{all_mentions} Request awaiting approval."
-            dm_text = f"Your request is awaiting approval from {all_mentions}."
-            status_text = cfg.pending_status
+            text, dm_text, status_text = slack_helpers.build_pending_approval_text(client, decision, cfg)
         case access_control.DecisionReason.NoApprovers:
             text = "Nobody can approve this request."
             dm_text = "Nobody can approve this request."
@@ -341,62 +335,86 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
         )
     cache_for_dublicate_requests["requester_slack_id"] = payload.request.requester_slack_id
     cache_for_dublicate_requests["group_id"] = payload.request.group_id
+    try:
+        # Create a resolver function that resolves approver groups per-statement
+        # This prevents cross-statement authorization bypass where someone in GroupY
+        # could approve requests for Statement A just because Statement A has some groups
+        resolver_cache: dict[frozenset[str], set[str]] = {}
 
-    # Create a resolver function that resolves approver groups per-statement
-    # This prevents cross-statement authorization bypass where someone in GroupY
-    # could approve requests for Statement A just because Statement A has some groups
-    resolver_cache: dict[frozenset[str], set[str]] = {}
+        def approver_group_resolver(group_ids: frozenset[str]) -> set[str]:
+            if not group_ids:
+                return set()
+            if group_ids in resolver_cache:
+                return resolver_cache[group_ids]
+            group_users, _ = slack_helpers.resolve_approver_groups(client, group_ids)
+            result = {u.id for u in group_users}
+            resolver_cache[group_ids] = result
+            return result
 
-    def approver_group_resolver(group_ids: frozenset[str]) -> set[str]:
-        if not group_ids:
-            return set()
-        if group_ids in resolver_cache:
-            return resolver_cache[group_ids]
-        group_users, _ = slack_helpers.resolve_approver_groups(client, group_ids)
-        result = {u.id for u in group_users}
-        resolver_cache[group_ids] = result
-        return result
+        is_self_cancel = payload.approver_slack_id == payload.request.requester_slack_id and payload.action == entities.ApproverAction.Deny
 
-    is_self_cancel = payload.approver_slack_id == payload.request.requester_slack_id and payload.action == entities.ApproverAction.Deny
-
-    decision = access_control.make_decision_on_approve_request(
-        action=payload.action,
-        statements=cfg.group_statements,  # type: ignore # noqa: PGH003
-        group_id=payload.request.group_id,
-        approver_email=approver.email,
-        requester_email=requester.email,
-        approver_slack_id=approver.id,
-        approver_group_resolver=approver_group_resolver,
-    )
-
-    logger.info("Decision on request was made", extra={"decision": decision.dict()})
-
-    if not decision.permit and not is_self_cancel:
-        cache_for_dublicate_requests.clear()
-        verb = "deny" if payload.action == entities.ApproverAction.Deny else "approve"
-        return client.chat_postMessage(
-            channel=payload.channel_id,
-            text=f"<@{approver.id}> You cannot {verb} this request.",
-            thread_ts=payload.thread_ts,
+        decision = access_control.make_decision_on_approve_request(
+            action=payload.action,
+            statements=cfg.group_statements,  # type: ignore # noqa: PGH003
+            group_id=payload.request.group_id,
+            approver_email=approver.email,
+            requester_email=requester.email,
+            approver_slack_id=approver.id,
+            approver_group_resolver=approver_group_resolver,
         )
 
-    if payload.action == entities.ApproverAction.Deny:
+        logger.info("Decision on request was made", extra={"decision": decision.dict()})
+
+        if not decision.permit and not is_self_cancel:
+            verb = "deny" if payload.action == entities.ApproverAction.Deny else "approve"
+            return client.chat_postMessage(
+                channel=payload.channel_id,
+                text=f"<@{approver.id}> You cannot {verb} this request.",
+                thread_ts=payload.thread_ts,
+            )
+
+        if payload.action == entities.ApproverAction.Deny:
+            blocks = slack_helpers.HeaderSectionBlock.set_status(
+                blocks=payload.message["blocks"],
+                status_text=cfg.denied_status,
+            )
+
+            blocks = slack_helpers.remove_blocks(blocks, block_ids=["buttons"])
+            if is_self_cancel:
+                footer_text = f"<@{requester.id}> cancelled the request"
+                text = f"Request was cancelled by <@{requester.id}>."
+                dm_text = None
+            else:
+                footer_text = f"<@{approver.id}> pressed {payload.action.value} button"
+                text = f"Request was denied by <@{approver.id}>."
+                dm_text = f"Your request was denied by <@{approver.id}>."
+            blocks.append(slack_helpers.footer_info_block(footer_text).to_dict())
+
+            client.chat_update(
+                channel=payload.channel_id,
+                ts=payload.thread_ts,
+                blocks=blocks,
+                text=text,
+            )
+
+            if dm_text is not None and cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
+                logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")
+                client.chat_postMessage(channel=requester.id, text=dm_text)
+            return client.chat_postMessage(
+                channel=payload.channel_id,
+                text=text,
+                thread_ts=payload.thread_ts,
+            )
+
+        text = f"Permissions granted by <@{approver.id}>."
+        dm_text = f"Your request was approved by <@{approver.id}>. Permissions granted."
         blocks = slack_helpers.HeaderSectionBlock.set_status(
             blocks=payload.message["blocks"],
-            status_text=cfg.denied_status,
+            status_text=cfg.granted_status,
         )
 
         blocks = slack_helpers.remove_blocks(blocks, block_ids=["buttons"])
-        if is_self_cancel:
-            footer_text = f"<@{requester.id}> cancelled the request"
-            text = f"Request was cancelled by <@{requester.id}>."
-            dm_text = None
-        else:
-            footer_text = f"<@{approver.id}> pressed {payload.action.value} button"
-            text = f"Request was denied by <@{approver.id}>."
-            dm_text = f"Your request was denied by <@{approver.id}>."
-        blocks.append(slack_helpers.footer_info_block(footer_text).to_dict())
-
+        blocks.append(slack_helpers.button_click_info_block(payload.action, approver.id).to_dict())
         client.chat_update(
             channel=payload.channel_id,
             ts=payload.thread_ts,
@@ -404,94 +422,71 @@ def handle_group_button_click(body: dict, client: WebClient, context: BoltContex
             text=text,
         )
 
-        cache_for_dublicate_requests.clear()
-        if dm_text is not None and cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
+        group = sso.describe_group(identity_store_id, payload.request.group_id, identity_store_client)
+        result = access_control.execute_decision_on_group_request(
+            decision=decision,
+            group=group,
+            permission_duration=payload.request.permission_duration,
+            approver=approver,
+            requester=requester,
+            reason=payload.request.reason,
+            identity_store_id=identity_store_id,
+            thread_ts=payload.thread_ts,
+        )
+
+        if result.concurrent_operation:
+            logger.info("Skipping follow-up — concurrent group approval already in progress")
+            return None  # type: ignore[return-value]
+
+        if result.granted:
+            analytics.capture(
+                event="aws_group_access_approved",
+                distinct_id=requester.email,
+                properties={
+                    "group_id": payload.request.group_id,
+                    "group_name": group.name,
+                    "approver_email": approver.email,
+                    "requester_email": requester.email,
+                    "duration_hours": payload.request.permission_duration.total_seconds() / 3600,
+                    "self_approved": approver.email == requester.email,
+                },
+            )
+
+        if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
             logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")
             client.chat_postMessage(channel=requester.id, text=dm_text)
+
+        # Post the "End session early" button after permissions are granted
+        if result.granted and result.schedule_name:
+            first_statement = list(decision.based_on_statements)[0] if decision.based_on_statements else None
+            approver_emails = list(first_statement.approvers) if first_statement else []
+            approver_groups = list(first_statement.approver_groups) if first_statement else []
+            assert result.user_principal_id is not None
+            early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
+                schedule_name=result.schedule_name,
+                requester_slack_id=requester.id,
+                group_id=result.group_id,
+                group_name=result.group_name,
+                identity_store_id=result.identity_store_id,
+                membership_id=result.membership_id,
+                user_principal_id=result.user_principal_id,
+                approver_emails=approver_emails,
+                approver_groups=approver_groups,
+            )
+            client.chat_postMessage(
+                channel=payload.channel_id,
+                thread_ts=payload.thread_ts,
+                blocks=[slack_helpers.build_early_revoke_button(early_revoke_payload).to_dict()],
+                text="End session early",
+            )
+
         return client.chat_postMessage(
             channel=payload.channel_id,
             text=text,
             thread_ts=payload.thread_ts,
         )
-
-    text = f"Permissions granted by <@{approver.id}>."
-    dm_text = f"Your request was approved by <@{approver.id}>. Permissions granted."
-    blocks = slack_helpers.HeaderSectionBlock.set_status(
-        blocks=payload.message["blocks"],
-        status_text=cfg.granted_status,
-    )
-
-    blocks = slack_helpers.remove_blocks(blocks, block_ids=["buttons"])
-    blocks.append(slack_helpers.button_click_info_block(payload.action, approver.id).to_dict())
-    client.chat_update(
-        channel=payload.channel_id,
-        ts=payload.thread_ts,
-        blocks=blocks,
-        text=text,
-    )
-
-    group = sso.describe_group(identity_store_id, payload.request.group_id, identity_store_client)
-    result = access_control.execute_decision_on_group_request(
-        decision=decision,
-        group=group,
-        permission_duration=payload.request.permission_duration,
-        approver=approver,
-        requester=requester,
-        reason=payload.request.reason,
-        identity_store_id=identity_store_id,
-        thread_ts=payload.thread_ts,
-    )
-
-    if result.concurrent_operation:
-        logger.info("Skipping follow-up — concurrent group approval already in progress")
+    finally:
+        # Always release the in-flight marker. Leaving it set on an exception made
+        # every later click on this request answer "already in progress", including
+        # Deny, until the container recycled.
         cache_for_dublicate_requests.clear()
-        return None  # type: ignore[return-value]
-
-    if result.granted:
-        analytics.capture(
-            event="aws_group_access_approved",
-            distinct_id=requester.email,
-            properties={
-                "group_id": payload.request.group_id,
-                "group_name": group.name,
-                "approver_email": approver.email,
-                "requester_email": requester.email,
-                "duration_hours": payload.request.permission_duration.total_seconds() / 3600,
-                "self_approved": approver.email == requester.email,
-            },
-        )
-
-    cache_for_dublicate_requests.clear()
-    if cfg.send_dm_if_user_not_in_channel and not is_user_in_channel:
-        logger.info(f"User {requester.id} is not in the channel. Sending DM with message: {dm_text}")
-        client.chat_postMessage(channel=requester.id, text=dm_text)
-
-    # Post the "End session early" button after permissions are granted
-    if result.granted and result.schedule_name:
-        first_statement = list(decision.based_on_statements)[0] if decision.based_on_statements else None
-        approver_emails = list(first_statement.approvers) if first_statement else []
-        approver_groups = list(first_statement.approver_groups) if first_statement else []
-        assert result.user_principal_id is not None
-        early_revoke_payload = slack_helpers.EarlyRevokeButtonPayload(
-            schedule_name=result.schedule_name,
-            requester_slack_id=requester.id,
-            group_id=result.group_id,
-            group_name=result.group_name,
-            identity_store_id=result.identity_store_id,
-            membership_id=result.membership_id,
-            user_principal_id=result.user_principal_id,
-            approver_emails=approver_emails,
-            approver_groups=approver_groups,
-        )
-        client.chat_postMessage(
-            channel=payload.channel_id,
-            thread_ts=payload.thread_ts,
-            blocks=[slack_helpers.build_early_revoke_button(early_revoke_payload).to_dict()],
-            text="End session early",
-        )
-
-    return client.chat_postMessage(
-        channel=payload.channel_id,
-        text=text,
-        thread_ts=payload.thread_ts,
-    )
