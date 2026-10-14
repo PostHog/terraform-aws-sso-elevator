@@ -1,10 +1,13 @@
 """Tests for main module."""
 
+from contextlib import contextmanager
 from datetime import timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
+import json
 import sys
 
 import pytest
+from botocore.exceptions import ClientError
 
 import config  # noqa: F401 — must import before mock_main_imports patches boto3
 import entities
@@ -1625,6 +1628,32 @@ class TestHandleLoadPermissionSets:
         ack.assert_called_once()
         assert client.views_update.called
 
+    def test_cache_hit_makes_no_sso_admin_calls(self, import_main):
+        main = import_main
+        import statement
+
+        main.cfg.permission_sets = frozenset({"*"})
+        client = MagicMock()
+
+        def _echo_view(**kwargs):
+            view = kwargs["view"]
+            blocks = view.to_dict()["blocks"] if hasattr(view, "to_dict") else view["blocks"]
+            return MagicMock(data={"view": {"blocks": blocks, "hash": "h2"}})
+
+        client.views_update.side_effect = _echo_view
+        cached = [entities.aws.PermissionSet(name="AdministratorAccess", arn="arn:aws:sso:::permissionSet/ssoins-x/ps-1", description=None)]
+        with (
+            patch.object(statement, "get_permission_sets_for_accounts_and_user", return_value={"AdministratorAccess"}),
+            patch("cache.get_cached_permission_sets", return_value=cached),
+            patch.object(main, "_get_cached_user_info", return_value=({"g-1"}, "u@test.com")),
+            patch.object(main, "classify_auto_approved_permission_sets", return_value=set()),
+        ):
+            main.handle_load_permission_sets(MagicMock(), self._body(["111111111111"]), client)
+
+        assert call("list_permission_sets") not in main.sso_client.get_paginator.call_args_list
+        main.sso_client.describe_permission_set.assert_not_called()
+        assert "AdministratorAccess" in _view_json(client.views_update.call_args.kwargs["view"])
+
 
 class TestWithRetries:
     """_with_retries retries transient AWS/Slack failures silently but not terminal ones."""
@@ -1845,8 +1874,8 @@ class TestPermissionSetHintInModal:
 
         hint_id = slack_helpers.RequestForAccessView.PERMISSION_SET_HINT_BLOCK_ID
         found = []
-        for call in mock_client.views_update.call_args_list:
-            view = call.kwargs["view"]
+        for update_call in mock_client.views_update.call_args_list:
+            view = update_call.kwargs["view"]
             found.append([b for b in view.blocks if slack_helpers.get_block_id(b) == hint_id])
         return found
 
@@ -1990,6 +2019,39 @@ class TestPermissionSetHintInModal:
             main.handle_load_permission_sets(MagicMock(), body, mock_client)
 
         assert main.user_view_map[f"{self.VIEW_KEY}:permission_set_hints_by_arn"] == {self.PS_ARN: self.HINT}
+
+    def test_cache_hit_makes_no_sso_admin_calls(self, import_main):
+        main = import_main
+        import access_control
+
+        main.user_view_map.clear()
+        self._seed_user_cache(main)
+        main.user_view_map[f"{self.VIEW_KEY}:permission_set_hints_by_arn"] = {}
+        main.cfg.permission_set_hints = {}
+        main.cfg.permission_sets = frozenset({"*"})
+        mock_client = self._mock_client()
+        decision = access_control.AccessRequestDecision(
+            grant=False,
+            reason=access_control.DecisionReason.RequiresApproval,
+            based_on_statements=frozenset(),
+            approvers=frozenset(["alice@test.com"]),
+            approver_groups=frozenset(),
+        )
+        with (
+            patch("cache.get_cached_permission_sets", return_value=[self._ps()]),
+            patch.object(main.access_control, "make_decision_on_access_request", return_value=decision),
+            patch.object(
+                main.slack_helpers,
+                "get_user_by_email",
+                return_value=entities.slack.User(id="U_ALICE", email="alice@test.com", real_name="Alice"),
+            ),
+        ):
+            main._handle_permission_set_selection_impl(self._body(), mock_client)
+
+        assert call("list_permission_sets") not in main.sso_client.get_paginator.call_args_list
+        main.sso_client.describe_permission_set.assert_not_called()
+        # Two updates (loading, then final) means the permission set was found in the cache.
+        assert mock_client.views_update.call_count == 2
 
 
 class TestPermissionSetHintThreadReply:
@@ -2308,3 +2370,184 @@ class TestDuplicateRequestCacheReleasedOnFailure:
             for p in patches:
                 p.stop()
             main_module.cache_for_dublicate_requests.clear()
+
+
+def _view_json(view) -> str:
+    return json.dumps(view.to_dict() if hasattr(view, "to_dict") else view)
+
+
+class TestAccountPopulateCacheRefresh:
+    """The populate step fills the modal from the cache, then refreshes the cache."""
+
+    ACCOUNT = entities.aws.Account(id="111111111111", name="prod")
+    BODY = {"trigger_id": "111.222.aaa", "user": {"id": "U1"}}
+
+    @contextmanager
+    def _user_lookups(self, eligible_accounts=frozenset({"*"})):
+        import slack_helpers
+        import sso
+        import statement
+
+        with (
+            patch.object(sso, "get_identity_store_id", return_value="d-1"),
+            patch.object(slack_helpers, "get_user", return_value=MagicMock(email="u@test.com")),
+            patch.object(sso, "get_user_principal_id_by_email", return_value=("p-1", None)),
+            patch.object(sso, "get_user_group_ids", return_value={"g-1"}),
+            patch.object(statement, "get_accounts_for_user", return_value=set(eligible_accounts)),
+        ):
+            yield
+
+    @staticmethod
+    def _configure(main):
+        main.cfg.cache_enabled = True
+        main.cfg.accounts = frozenset({"*"})
+        main.cfg.permission_sets = frozenset({"*"})
+
+    @staticmethod
+    def _recording_paginator(events, prefix, pages):
+        def get_paginator(name):
+            events.append(f"{prefix}:{name}")
+            paginator = MagicMock()
+            paginator.paginate.return_value = pages
+            return paginator
+
+        return get_paginator
+
+    def test_refresh_runs_after_views_update(self, import_main):
+        main = import_main
+        import organizations
+        import sso
+
+        manager = MagicMock()
+        manager.get_accounts.return_value = [self.ACCOUNT]
+        with (
+            self._user_lookups(),
+            patch.object(organizations, "get_accounts_from_config_with_cache", manager.get_accounts),
+            patch.object(sso, "refresh_account_and_permission_set_caches", manager.refresh),
+        ):
+            main.load_select_options_for_account_access_request(manager.client, self.BODY)
+
+        order = [c[0] for c in manager.mock_calls if c[0] in {"get_accounts", "client.views_update", "refresh"}]
+        assert order == ["get_accounts", "client.views_update", "refresh"]
+        manager.refresh.assert_called_once_with(
+            org_client=main.org_client, sso_client=main.sso_client, s3_client=main.s3_client, cfg=main.cfg
+        )
+
+    def test_cache_hit_fills_modal_before_any_api_call(self, import_main):
+        main = import_main
+        self._configure(main)
+        events = []
+        client = MagicMock()
+        client.views_update.side_effect = lambda **_kwargs: events.append("views_update")
+        main.org_client.get_paginator.side_effect = self._recording_paginator(
+            events, "org", [{"Accounts": [{"Id": "111111111111", "Name": "prod"}]}]
+        )
+        main.sso_client.get_paginator.side_effect = self._recording_paginator(events, "sso", [{"PermissionSets": []}])
+
+        with (
+            self._user_lookups(),
+            patch("cache.get_cached_accounts", return_value=[self.ACCOUNT]),
+            patch("cache.get_cached_permission_sets", return_value=[]),
+            patch("cache.set_cached_accounts", side_effect=lambda *_args: events.append("set_accounts") or True),
+            patch("cache.set_cached_permission_sets", side_effect=lambda *_args: events.append("set_permission_sets") or True),
+        ):
+            main.load_select_options_for_account_access_request(client, self.BODY)
+
+        assert events == ["views_update", "org:list_accounts", "sso:list_permission_sets"]
+
+    def test_cache_miss_reads_api_then_fills_modal_then_refreshes(self, import_main):
+        main = import_main
+        self._configure(main)
+        events = []
+        client = MagicMock()
+        client.views_update.side_effect = lambda **_kwargs: events.append("views_update")
+        main.org_client.get_paginator.side_effect = self._recording_paginator(
+            events, "org", [{"Accounts": [{"Id": "111111111111", "Name": "prod"}]}]
+        )
+        main.sso_client.get_paginator.side_effect = self._recording_paginator(events, "sso", [{"PermissionSets": []}])
+
+        with (
+            self._user_lookups(),
+            patch("cache.get_cached_accounts", return_value=None),
+            patch("cache.get_cached_permission_sets", return_value=None),
+            patch("cache.set_cached_accounts", side_effect=lambda *_args: events.append("set_accounts") or True),
+            patch("cache.set_cached_permission_sets", side_effect=lambda *_args: events.append("set_permission_sets") or True),
+        ):
+            main.load_select_options_for_account_access_request(client, self.BODY)
+
+        assert events == [
+            "org:list_accounts",
+            "set_accounts",
+            "views_update",
+            "org:list_accounts",
+            "set_accounts",
+            "sso:list_permission_sets",
+            "set_permission_sets",
+        ]
+        assert "111111111111" in _view_json(client.views_update.call_args.kwargs["view"])
+
+    def test_refresh_failure_does_not_change_the_result(self, import_main):
+        main = import_main
+        import organizations
+        import sso
+
+        client = MagicMock()
+        with (
+            self._user_lookups(),
+            patch.object(organizations, "get_accounts_from_config_with_cache", return_value=[self.ACCOUNT]),
+            patch.object(sso, "refresh_account_and_permission_set_caches", side_effect=RuntimeError("boom")),
+        ):
+            result = main.load_select_options_for_account_access_request(client, self.BODY)
+
+        assert result is client.views_update.return_value
+
+    def test_api_throttling_during_refresh_keeps_modal(self, import_main):
+        main = import_main
+        self._configure(main)
+        client = MagicMock()
+        main.org_client.get_paginator.side_effect = ClientError(
+            {"Error": {"Code": "TooManyRequestsException", "Message": "Rate exceeded"}}, "ListAccounts"
+        )
+        main.sso_client.get_paginator.return_value.paginate.return_value = [{"PermissionSets": []}]
+
+        with (
+            self._user_lookups(),
+            patch("cache.get_cached_accounts", return_value=[self.ACCOUNT]),
+            patch("cache.get_cached_permission_sets", return_value=[]),
+            patch("cache.set_cached_permission_sets", return_value=True),
+        ):
+            result = main.load_select_options_for_account_access_request(client, self.BODY)
+
+        assert result is client.views_update.return_value
+        client.views_update.assert_called_once()
+
+    def test_no_eligible_accounts_does_not_refresh(self, import_main):
+        main = import_main
+        import sso
+
+        client = MagicMock()
+        with (
+            self._user_lookups(eligible_accounts=frozenset()),
+            patch.object(sso, "refresh_account_and_permission_set_caches") as refresh,
+        ):
+            main.load_select_options_for_account_access_request(client, self.BODY)
+
+        refresh.assert_not_called()
+        client.views_update.assert_called_once()
+
+    def test_views_update_failure_skips_refresh(self, import_main):
+        main = import_main
+        import organizations
+        import sso
+
+        client = MagicMock()
+        client.views_update.side_effect = RuntimeError("slack down")
+        with (
+            self._user_lookups(),
+            patch.object(organizations, "get_accounts_from_config_with_cache", return_value=[self.ACCOUNT]),
+            patch.object(sso, "refresh_account_and_permission_set_caches") as refresh,
+        ):
+            with pytest.raises(RuntimeError, match="slack down"):
+                main.load_select_options_for_account_access_request(client, self.BODY)
+
+        refresh.assert_not_called()
