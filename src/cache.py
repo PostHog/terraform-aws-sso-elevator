@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Generic, Optional, TypeVar
 
 import config
 from entities.aws import Account, PermissionSet
@@ -169,17 +169,20 @@ def set_cached_accounts(
     s3_client: S3Client,
     cache_config: CacheConfig,
     accounts: list[Account],
-) -> None:
+) -> bool:
     """Store accounts in S3 cache.
 
     Args:
         s3_client: S3 client
         cache_config: Cache configuration
         accounts: List of accounts to cache
+
+    Returns:
+        True if the accounts were written, False if the cache is disabled or the write failed
     """
     if not cache_config.enabled:
         logger.debug("Cache is disabled, skipping cache write")
-        return
+        return False
 
     try:
         validated_bucket_name = _validate_bucket_name(cache_config.bucket_name)
@@ -196,11 +199,13 @@ def set_cached_accounts(
         )
 
         logger.info(f"Cached {len(accounts)} accounts")
+        return True
 
     except ValueError as e:
         logger.warning(f"Validation failed when caching accounts: {e}", extra={"error": str(e)})
     except Exception as e:
         logger.warning(f"Failed to cache accounts: {e}", extra={"error": str(e)})
+    return False
 
 
 def get_cached_permission_sets(
@@ -253,7 +258,7 @@ def set_cached_permission_sets(
     cache_config: CacheConfig,
     sso_instance_arn: str,
     permission_sets: list[PermissionSet],
-) -> None:
+) -> bool:
     """Store permission sets in S3 cache.
 
     Args:
@@ -261,10 +266,13 @@ def set_cached_permission_sets(
         cache_config: Cache configuration
         sso_instance_arn: SSO instance ARN (used as part of cache key)
         permission_sets: List of permission sets to cache
+
+    Returns:
+        True if the permission sets were written, False if the cache is disabled or the write failed
     """
     if not cache_config.enabled:
         logger.debug("Cache is disabled, skipping cache write")
-        return
+        return False
 
     try:
         validated_bucket_name = _validate_bucket_name(cache_config.bucket_name)
@@ -285,11 +293,13 @@ def set_cached_permission_sets(
         )
 
         logger.info(f"Cached {len(permission_sets)} permission sets")
+        return True
 
     except ValueError as e:
         logger.warning(f"Validation failed when caching permission sets: {e}", extra={"error": str(e)})
     except Exception as e:
         logger.warning(f"Failed to cache permission sets: {e}", extra={"error": str(e)})
+    return False
 
 
 def _compute_data_hash(data: object) -> str:
@@ -338,7 +348,7 @@ def _compare_data(api_data: T, cached_data: T, compare_func: Optional[Callable[[
 def _update_cache_if_needed(
     api_data: T,
     cached_data: Optional[T],
-    cache_setter: Callable[[T], None],
+    cache_setter: Callable[[T], object],
     resource_name: str,
     compare_func: Optional[Callable[[T, T], bool]],
 ) -> None:
@@ -374,7 +384,7 @@ def _update_cache_if_needed(
 def with_cache_resilience(
     cache_getter: Callable[[], Optional[T]],
     api_getter: Callable[[], T],
-    cache_setter: Callable[[T], None],
+    cache_setter: Callable[[T], object],
     resource_name: str,
     compare_func: Optional[Callable[[T, T], bool]] = None,
 ) -> T:
@@ -437,3 +447,66 @@ def with_cache_resilience(
     # Both API and cache failed
     logger.error(f"Both API and cache failed for {resource_name}")
     raise api_error or Exception(f"Failed to retrieve {resource_name} from both API and cache")
+
+
+@dataclass(frozen=True)
+class CachedResource(Generic[T]):
+    """An AWS resource list kept in the S3 cache: how to read the cache, call the API, and write the cache."""
+
+    name: str
+    cache_getter: Callable[[], Optional[T]]
+    api_getter: Callable[[], T]
+    cache_setter: Callable[[T], bool]
+
+
+def _read_cache(resource: CachedResource[T]) -> Optional[T]:
+    try:
+        return resource.cache_getter()
+    except Exception as e:
+        logger.warning(f"Cache read failed for {resource.name}: {e}")
+        return None
+
+
+def get_cache_first(resource: CachedResource[T]) -> T:
+    """Return the cached data if there is any. Otherwise call the API and write the result to the cache.
+
+    An empty cached list is a hit. refresh_cache keeps the cache current.
+
+    Raises:
+        Exception: If the cache has no data and the API call fails
+    """
+    cached_data = _read_cache(resource)
+    if cached_data is not None:
+        return cached_data
+
+    api_data = resource.api_getter()
+    try:
+        resource.cache_setter(api_data)
+    except Exception as e:
+        logger.warning(f"Failed to cache {resource.name}: {e}")
+    return api_data
+
+
+def refresh_cache(resource: CachedResource[T]) -> None:
+    """Call the API and write the result to the cache if it differs from the cached data. Never raises."""
+    try:
+        api_data = resource.api_getter()
+    except Exception as e:
+        logger.warning(f"Cache refresh for {resource.name}: failed", extra={"error": str(e)})
+        return
+
+    cached_data = _read_cache(resource)
+    if cached_data is not None and _compare_data(api_data, cached_data, None):
+        logger.info(f"Cache refresh for {resource.name}: unchanged")
+        return
+
+    try:
+        written = resource.cache_setter(api_data)
+    except Exception as e:
+        logger.warning(f"Cache refresh for {resource.name}: failed", extra={"error": str(e)})
+        return
+
+    if written:
+        logger.info(f"Cache refresh for {resource.name}: updated")
+    else:
+        logger.warning(f"Cache refresh for {resource.name}: failed", extra={"error": "cache write did not complete"})
