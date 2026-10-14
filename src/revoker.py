@@ -27,6 +27,7 @@ from events import (
     DiscardButtonsEvent,
     Event,
     GroupRevokeEvent,
+    RefreshCache,
     RevokeEvent,
     ScheduledGroupRevokeEvent,
     ScheduledRevokeEvent,
@@ -41,6 +42,7 @@ sso_client = boto3.client("sso-admin")  # type: ignore # noqa: PGH003
 identitystore_client = boto3.client("identitystore")  # type: ignore # noqa: PGH003
 scheduler_client = boto3.client("scheduler")  # type: ignore # noqa: PGH003
 events_client = boto3.client("events")  # type: ignore # noqa: PGH003
+s3_client = boto3.client("s3")  # type: ignore # noqa: PGH003
 cloudwatch_client: CloudWatchClient = boto3.client("cloudwatch")  # type: ignore # noqa: PGH003
 slack_client = slack_sdk.WebClient(token=cfg.slack_bot_token)
 
@@ -65,7 +67,7 @@ def publish_stale_grants_metric(count: int, cloudwatch: CloudWatchClient) -> Non
     )
 
 
-def lambda_handler(event: dict, __) -> SlackResponse | None:  # type: ignore # noqa: ANN001, PGH003
+def lambda_handler(event: dict, __) -> SlackResponse | None:  # type: ignore # noqa: ANN001, PGH003, PLR0911
     try:
         parsed_event = Event.model_validate(event).root
     except ValidationError as e:
@@ -148,6 +150,10 @@ def lambda_handler(event: dict, __) -> SlackResponse | None:  # type: ignore # n
                 slack_client=slack_client,
                 scheduler_client=scheduler_client,
             )
+        case RefreshCache():
+            logger.info("Handling RefreshCache event")
+            sso.refresh_account_and_permission_set_caches(org_client=org_client, sso_client=sso_client, s3_client=s3_client, cfg=cfg)
+            return
 
 
 def handle_early_account_revocation(  # noqa: PLR0913
