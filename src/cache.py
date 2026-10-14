@@ -1,4 +1,4 @@
-"""Cache module for caching AWS accounts and permission sets in S3."""
+"""S3 cache of AWS accounts and permission sets: cache-first reads and refreshes."""
 
 from __future__ import annotations
 
@@ -321,21 +321,16 @@ def _compute_data_hash(data: object) -> str:
         return ""
 
 
-def _compare_data(api_data: T, cached_data: T, compare_func: Optional[Callable[[T, T], bool]]) -> bool:
+def _compare_data(api_data: T, cached_data: T) -> bool:
     """Compare API data with cached data using hash comparison.
 
     Args:
         api_data: Data from API
         cached_data: Data from cache
-        compare_func: Optional custom comparison function
 
     Returns:
         True if data matches, False otherwise
     """
-    if compare_func:
-        return compare_func(api_data, cached_data)
-
-    # Default comparison: compute and compare hashes
     try:
         api_hash = _compute_data_hash(api_data)
         cache_hash = _compute_data_hash(cached_data)
@@ -343,110 +338,6 @@ def _compare_data(api_data: T, cached_data: T, compare_func: Optional[Callable[[
     except Exception:
         # If comparison fails, assume data is different
         return False
-
-
-def _update_cache_if_needed(
-    api_data: T,
-    cached_data: Optional[T],
-    cache_setter: Callable[[T], object],
-    resource_name: str,
-    compare_func: Optional[Callable[[T, T], bool]],
-) -> None:
-    """Update cache if API data differs from cached data.
-
-    Args:
-        api_data: Data from API
-        cached_data: Data from cache (or None)
-        cache_setter: Function to update cache
-        resource_name: Name of resource for logging
-        compare_func: Optional custom comparison function
-    """
-    if cached_data is not None:
-        data_matches = _compare_data(api_data, cached_data, compare_func)
-
-        if not data_matches:
-            logger.info(f"API data differs from cache for {resource_name}, updating cache")
-            try:
-                cache_setter(api_data)
-            except Exception as e:
-                logger.warning(f"Failed to update cache for {resource_name}: {e}")
-        else:
-            logger.debug(f"API data matches cache for {resource_name}, no update needed")
-    else:
-        # No cached data, store API result
-        logger.info(f"No cached data for {resource_name}, storing API result")
-        try:
-            cache_setter(api_data)
-        except Exception as e:
-            logger.warning(f"Failed to cache {resource_name}: {e}")
-
-
-def with_cache_resilience(
-    cache_getter: Callable[[], Optional[T]],
-    api_getter: Callable[[], T],
-    cache_setter: Callable[[T], object],
-    resource_name: str,
-    compare_func: Optional[Callable[[T, T], bool]] = None,
-) -> T:
-    """Get data with cache resilience using parallel API and cache calls.
-
-    This function calls both the API and cache in parallel. If the API call succeeds,
-    it compares the result with cached data and updates the cache if different.
-    If the API call fails, it falls back to cached data.
-
-    Args:
-        cache_getter: Function to get data from cache
-        api_getter: Function to get data from API
-        cache_setter: Function to set data in cache
-        resource_name: Name of the resource for logging
-        compare_func: Optional function to compare API and cached data (returns True if equal)
-
-    Returns:
-        The data from API (if successful) or cache (if API fails)
-
-    Raises:
-        Exception: If both API and cache fail
-    """
-    import concurrent.futures
-
-    cached_data = None
-    api_data = None
-    api_error = None
-
-    # Execute API and cache calls in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        cache_future = executor.submit(cache_getter)
-        api_future = executor.submit(api_getter)
-
-        # Get cache result
-        try:
-            cached_data = cache_future.result()
-            if cached_data is not None:
-                logger.debug(f"Cache data available for {resource_name}")
-        except Exception as e:
-            logger.warning(f"Cache lookup failed for {resource_name}: {e}")
-
-        # Get API result
-        try:
-            api_data = api_future.result()
-            logger.info(f"Successfully fetched {resource_name} from API")
-        except Exception as e:
-            api_error = e
-            logger.warning(f"API call failed for {resource_name}: {e}")
-
-    # If API succeeded, update cache if needed and return API data
-    if api_data is not None:
-        _update_cache_if_needed(api_data, cached_data, cache_setter, resource_name, compare_func)
-        return api_data
-
-    # If API failed, fall back to cache
-    if cached_data is not None:
-        logger.warning(f"API failed for {resource_name}, using cached data as fallback")
-        return cached_data
-
-    # Both API and cache failed
-    logger.error(f"Both API and cache failed for {resource_name}")
-    raise api_error or Exception(f"Failed to retrieve {resource_name} from both API and cache")
 
 
 @dataclass(frozen=True)
@@ -496,7 +387,7 @@ def refresh_cache(resource: CachedResource[T]) -> None:
         return
 
     cached_data = _read_cache(resource)
-    if cached_data is not None and _compare_data(api_data, cached_data, None):
+    if cached_data is not None and _compare_data(api_data, cached_data):
         logger.info(f"Cache refresh for {resource.name}: unchanged")
         return
 

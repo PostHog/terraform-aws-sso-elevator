@@ -20,16 +20,29 @@ def list_accounts(client: OrganizationsClient) -> list[Account]:
     return [parse_account(account) for account in accounts]
 
 
+def _accounts_cache(
+    org_client: OrganizationsClient,
+    s3_client: S3Client,
+    cfg: config.Config,
+) -> cache_module.CachedResource[list[Account]]:
+    cache_config = cache_module.CacheConfig.from_config(cfg)
+    return cache_module.CachedResource(
+        name="accounts",
+        cache_getter=lambda: cache_module.get_cached_accounts(s3_client, cache_config),
+        api_getter=lambda: list_accounts(org_client),
+        cache_setter=lambda accounts: cache_module.set_cached_accounts(s3_client, cache_config, accounts),
+    )
+
+
 def list_accounts_with_cache(
     org_client: OrganizationsClient,
     s3_client: S3Client,
     cfg: config.Config,
 ) -> list[Account]:
-    """List all accounts with cache resilience.
+    """List all accounts, from the S3 cache if it has data.
 
-    This function calls both the Organizations API and S3 cache in parallel.
-    If the API call succeeds, it compares with cached data and updates if different.
-    If the API call fails, it falls back to cached data.
+    On a cache miss, this calls the Organizations API and writes the result to the cache.
+    refresh_accounts_cache keeps the cache current.
 
     Args:
         org_client: Organizations client
@@ -39,14 +52,16 @@ def list_accounts_with_cache(
     Returns:
         List of all accounts
     """
-    cache_config = cache_module.CacheConfig.from_config(cfg)
+    return cache_module.get_cache_first(_accounts_cache(org_client, s3_client, cfg))
 
-    return cache_module.with_cache_resilience(
-        cache_getter=lambda: cache_module.get_cached_accounts(s3_client, cache_config),
-        api_getter=lambda: list_accounts(org_client),
-        cache_setter=lambda accounts: cache_module.set_cached_accounts(s3_client, cache_config, accounts),
-        resource_name="accounts",
-    )
+
+def refresh_accounts_cache(
+    org_client: OrganizationsClient,
+    s3_client: S3Client,
+    cfg: config.Config,
+) -> None:
+    """Fetch all accounts from the Organizations API and update the S3 cache if they changed. Never raises."""
+    cache_module.refresh_cache(_accounts_cache(org_client, s3_client, cfg))
 
 
 def describe_account(client: OrganizationsClient, account_id: str) -> Account:
@@ -67,11 +82,7 @@ def get_accounts_from_config_with_cache(
     s3_client: S3Client,
     cfg: config.Config,
 ) -> list[Account]:
-    """Get accounts from config with cache resilience.
-
-    This function calls both the Organizations API and S3 cache in parallel.
-    If the API call succeeds, it compares with cached data and updates if different.
-    If the API call fails, it falls back to cached data.
+    """Get the accounts named in the config, from the S3 cache if it has data.
 
     Args:
         org_client: Organizations client
