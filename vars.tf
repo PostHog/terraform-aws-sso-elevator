@@ -91,6 +91,12 @@ variable "schedule_expression_for_check_on_inconsistency" {
   default     = "rate(2 hours)"
 }
 
+variable "schedule_expression_for_cache_refresh" {
+  description = "How often the revoker refreshes the S3 cache of accounts and permission sets. Used only when cache_enabled is true."
+  type        = string
+  default     = "rate(15 minutes)"
+}
+
 variable "sso_instance_arn" {
   description = "value for the SSO instance ARN"
   type        = string

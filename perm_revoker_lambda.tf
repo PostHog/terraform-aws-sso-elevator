@@ -69,6 +69,7 @@ module "access_revoker" {
       PERMISSION_DURATION_LIST_OVERRIDE           = jsonencode(var.permission_duration_list_override)
       CONFIG_BUCKET_NAME                          = local.config_bucket_name
       CONFIG_S3_KEY                               = "config/approval-config.json"
+      CACHE_ENABLED                               = var.cache_enabled
 
       APPROVER_RENOTIFICATION_INITIAL_WAIT_TIME  = var.approver_renotification_initial_wait_time
       APPROVER_RENOTIFICATION_BACKOFF_MULTIPLIER = var.approver_renotification_backoff_multiplier
@@ -84,16 +85,24 @@ module "access_revoker" {
     } : {}
   )
 
-  allowed_triggers = {
-    cron = {
-      principal  = "events.amazonaws.com"
-      source_arn = aws_cloudwatch_event_rule.sso_elevator_scheduled_revocation.arn
-    }
-    check_inconsistency = {
-      principal  = "events.amazonaws.com"
-      source_arn = aws_cloudwatch_event_rule.sso_elevator_check_on_inconsistency.arn
-    }
-  }
+  allowed_triggers = merge(
+    {
+      cron = {
+        principal  = "events.amazonaws.com"
+        source_arn = aws_cloudwatch_event_rule.sso_elevator_scheduled_revocation.arn
+      }
+      check_inconsistency = {
+        principal  = "events.amazonaws.com"
+        source_arn = aws_cloudwatch_event_rule.sso_elevator_check_on_inconsistency.arn
+      }
+    },
+    {
+      for rule in aws_cloudwatch_event_rule.cache_refresh : "cache_refresh" => {
+        principal  = "events.amazonaws.com"
+        source_arn = rule.arn
+      }
+    },
+  )
 
   attach_policy_json = true
   policy_json        = data.aws_iam_policy_document.revoker.json
@@ -194,6 +203,18 @@ data "aws_iam_policy_document" "revoker" {
       "${module.config_bucket.s3_bucket_arn}/*"
     ]
   }
+  dynamic "statement" {
+    for_each = var.cache_enabled ? [1] : []
+    content {
+      sid     = "AllowS3CacheWrite"
+      effect  = "Allow"
+      actions = ["s3:PutObject"]
+      resources = [
+        "${module.config_bucket.s3_bucket_arn}/accounts.json",
+        "${module.config_bucket.s3_bucket_arn}/permission_sets/*",
+      ]
+    }
+  }
   statement {
     sid    = "AllowCloudWatchPutMetricData"
     effect = "Allow"
@@ -245,6 +266,25 @@ resource "aws_cloudwatch_event_target" "check_inconsistency" {
   arn  = module.access_revoker.lambda_function_arn
   input = jsonencode({
     "action" : "check_on_inconsistency"
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "cache_refresh" {
+  for_each = var.cache_enabled ? toset(["enabled"]) : toset([])
+
+  name                = "${var.revoker_lambda_name}-cache-refresh"
+  description         = "Triggers on schedule to refresh the S3 cache of accounts and permission sets."
+  schedule_expression = var.schedule_expression_for_cache_refresh
+  tags                = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "cache_refresh" {
+  for_each = aws_cloudwatch_event_rule.cache_refresh
+
+  rule = each.value.name
+  arn  = module.access_revoker.lambda_function_arn
+  input = jsonencode({
+    "action" : "refresh_cache"
   })
 }
 
