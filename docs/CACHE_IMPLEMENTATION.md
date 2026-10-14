@@ -2,31 +2,26 @@
 
 ## Overview
 
-This implementation adds caching for AWS accounts and permission sets using S3 to improve resilience during AWS service outages. The cache uses a parallel API/cache call strategy with automatic cache updates when data changes.
+SSO Elevator caches AWS accounts and permission sets in S3. The request modal reads from the cache first, so it does not wait for the Organizations API (which returns at most 20 accounts per page). The cache also keeps the modal working during an AWS API outage.
 
 ## Caching Strategy
 
-### Parallel API and Cache Calls
+### Cache-first reads
 
-The implementation uses a resilient caching strategy:
+1. **Cache hit**: return the cached data. Do not call the API. An empty cached list is a hit.
+2. **Cache miss** (no object, unreadable object, or cache disabled): call the API, write the result to the cache, and return it.
+3. **Cache miss and API failure**: raise the error.
 
-1. **Parallel Execution**: Both AWS API and S3 cache are called simultaneously using ThreadPoolExecutor
-2. **API Success Path**: 
-   - If API call succeeds, compare the result with cached data
-   - If data differs, update the cache automatically
-   - Return the fresh API data
-3. **API Failure Path**:
-   - If API call fails but cache has data, return cached data as fallback
-   - Log warning about using cached data
-4. **Both Fail Path**:
-   - If both API and cache fail, raise an exception
+### Refreshes
 
-### Benefits
+A refresh calls the API and writes the result to the cache only if it differs from the cached data. A refresh never raises. Two triggers run it:
 
-- **No TTL Management**: Cache is kept indefinitely and updated automatically when data changes
-- **Maximum Resilience**: Always tries API first, falls back to cache on failure
-- **Automatic Updates**: Cache stays fresh without manual intervention
-- **Parallel Performance**: API and cache calls don't block each other
+1. **The request modal.** After the modal shows the account list, the same Lambda invocation refreshes the accounts and permission-sets caches. The user does not wait for it. A user who does not see a new account closes and reopens the modal.
+2. **A schedule.** An EventBridge rule sends `{"action": "refresh_cache"}` to the revoker Lambda. The default is `rate(15 minutes)` (`schedule_expression_for_cache_refresh`). The rule exists only when `cache_enabled` is true.
+
+### Trade-off
+
+A new or removed account or permission set can show stale data until the next refresh: up to 15 minutes by default, or until a user reopens the modal.
 
 ## Implementation Details
 
@@ -57,7 +52,7 @@ The implementation uses a resilient caching strategy:
      - `s3:GetObject`
      - `s3:PutObject`
      - `s3:ListBucket`
-   - Note: The revoker Lambda does NOT use cache and does not have these permissions
+   - Note: The revoker Lambda has `s3:GetObject` and `s3:ListBucket` on the config bucket. When `cache_enabled` is true, it also has `s3:PutObject` on `accounts.json` and `permission_sets/*` for the scheduled refresh.
 
 4. **Outputs** (`outputs.tf`):
    - `config_s3_bucket_name`: The name of the config S3 bucket
@@ -65,33 +60,31 @@ The implementation uses a resilient caching strategy:
 
 ### Application Changes
 
-1. **Updated Cache Module** (`src/cache.py`):
+1. **Cache Module** (`src/cache.py`):
    - `CacheConfig`: Configuration class for cache settings (no TTL field)
-   - `get_cached_accounts()`: Retrieve cached accounts from S3
-   - `set_cached_accounts()`: Store accounts in S3 cache
-   - `get_cached_permission_sets()`: Retrieve cached permission sets
-   - `set_cached_permission_sets()`: Store permission sets in cache
-   - `with_cache_resilience()`: New function implementing parallel API/cache strategy with automatic updates
+   - `get_cached_accounts()` / `set_cached_accounts()`: Read and write the accounts object. The setter returns `True` when it wrote the object.
+   - `get_cached_permission_sets()` / `set_cached_permission_sets()`: Read and write the permission-sets object. The setter returns `True` when it wrote the object.
+   - `CachedResource`: Bundles a resource name, cache getter, API getter and cache setter.
+   - `get_cache_first()`: Cache-first read.
+   - `refresh_cache()`: API read, then a cache write if the data changed. Never raises.
 
-2. **Updated Organizations Module** (`src/organizations.py`):
-   - `list_accounts_with_cache()`: Lists accounts with cache resilience
-   - `get_accounts_from_config_with_cache()`: Gets filtered accounts with cache resilience
-   - Uses parallel API/cache calls with automatic cache updates
+2. **Organizations Module** (`src/organizations.py`):
+   - `list_accounts_with_cache()` / `get_accounts_from_config_with_cache()`: Cache-first account lists
+   - `refresh_accounts_cache()`: Refreshes the accounts cache
 
-3. **Updated SSO Module** (`src/sso.py`):
-   - `list_permission_sets_with_cache()`: Lists permission sets with cache resilience
-   - `get_permission_sets_from_config_with_cache()`: Gets filtered permission sets with cache resilience
-   - `get_account_assignment_information_with_cache()`: Combined function for both cached data
-   - Uses parallel API/cache calls with automatic cache updates
+3. **SSO Module** (`src/sso.py`):
+   - `list_permission_sets_with_cache()` / `get_permission_sets_from_config_with_cache()`: Cache-first permission-set lists
+   - `refresh_permission_sets_cache()`: Refreshes the permission-sets cache
+   - `refresh_account_and_permission_set_caches()`: Refreshes both. Returns at once when `cache_enabled` is false.
 
 4. **Updated Config** (`src/config.py`):
    - `config_bucket_name`: S3 bucket name (default: `sso-elevator-config`)
    - `cache_enabled`: Boolean flag to enable/disable caching (default: `True`)
    - Removed `cache_ttl_minutes` field
 
-5. **Updated Lambda Handlers**:
-   - `src/main.py`: Updated to use S3 cache for accounts and permission sets
-   - `src/revoker.py`: Does NOT use cache - always fetches fresh data from AWS APIs for accuracy
+5. **Lambda Handlers**:
+   - `src/main.py`: Reads accounts and permission sets cache-first. The account-modal populate step refreshes both caches after `views_update`.
+   - `src/revoker.py`: Refreshes both caches on the `refresh_cache` scheduled event. Its inconsistency checks and revocations do NOT read the cache. They always fetch fresh data from AWS APIs for accuracy.
 
 ## Cache Behavior
 
@@ -110,30 +103,11 @@ The cache uses S3 object keys:
 
 ### Cache Lifecycle
 
-1. **First Request**: 
-   - API and cache called in parallel
-   - Cache miss (no data)
-   - API succeeds → Store in cache → Return API data
-
-2. **Subsequent Requests (Data Unchanged)**:
-   - API and cache called in parallel
-   - Both succeed
-   - Data matches → No cache update → Return API data
-
-3. **Subsequent Requests (Data Changed)**:
-   - API and cache called in parallel
-   - Both succeed
-   - Data differs → Update cache → Return API data
-
-4. **API Unavailable**:
-   - API and cache called in parallel
-   - API fails, cache succeeds
-   - Return cached data (logged as fallback)
-
-5. **Cache Unavailable**:
-   - API and cache called in parallel
-   - Cache fails, API succeeds
-   - Store in cache → Return API data
+1. **First request after deploy**: Cache miss → API → write cache → return API data. The refresh after the modal fills calls the API again.
+2. **Later requests**: Cache hit → return cached data. No API call before the modal fills.
+3. **Data changed in AWS**: The next refresh (modal or schedule) writes the new data. The next modal open shows it.
+4. **API unavailable**: Reads return cached data. Refreshes log `Cache refresh for <name>: failed` and keep the old cache.
+5. **Cache unavailable**: Reads fall back to the API on every request. Refreshes log `failed`.
 
 ### Error Handling
 
@@ -150,10 +124,11 @@ The cache uses S3 object keys:
   - S3 service is down
   
 **Behavior on errors:**
-- **Cache read errors**: Log warning, continue with API data only
-- **Cache write errors**: Log warning, return API data without caching
-- **API errors with cache available**: Log warning, return cached data
-- **Both fail**: Raise exception (application cannot function)
+- **Cache read errors**: Treated as a cache miss. The read calls the API.
+- **Cache write errors**: Log a warning. The read returns the API data. A refresh logs `failed`.
+- **API errors on a cache hit**: None. The read does not call the API.
+- **API errors during a refresh**: Log `failed` and keep the old cache.
+- **Cache miss and API error**: Raise an exception (the application cannot function).
 
 ## Configuration
 
@@ -222,15 +197,15 @@ module "aws_sso_elevator" {
 
 Cache operations are logged with the following patterns:
 
-- `"Retrieved X accounts from cache"`: Accounts retrieved from cache
+- `"Retrieved X accounts from cache"`: Cache hit
 - `"Cache miss for accounts"`: No cached accounts found
-- `"Successfully fetched accounts from API"`: API call succeeded
-- `"API call failed for accounts"`: API call failed
-- `"API data differs from cache"`: Cache will be updated
-- `"API data matches cache"`: No cache update needed
-- `"API failed for accounts, using cached data as fallback"`: Using cache due to API failure
+- `"Cache refresh for accounts: updated"` / `"... permission_sets: updated"`: The refresh wrote new data (INFO)
+- `"Cache refresh for accounts: unchanged"`: The refresh found no change (INFO)
+- `"Cache refresh for accounts: failed"`: The API call or the cache write failed (WARNING)
 - `"Failed to get cached accounts"`: Error reading from cache
 - `"Failed to cache accounts"`: Error writing to cache
+
+The scheduled refresh logs to the revoker log group. Each run logs one `Cache refresh for` line per resource.
 
 ### S3 Metrics
 
@@ -254,10 +229,10 @@ Monitor these CloudWatch metrics for the cache bucket:
 
 ## Performance Impact
 
-- **Parallel Calls**: API and cache calls execute simultaneously (~50-100ms for cache)
-- **Cache Hit + API Success**: Same latency as API-only (cache runs in parallel)
-- **API Failure with Cache**: ~50-100ms (S3 GetObject latency)
-- **Cost**: S3 charges apply (~$0.005 per 1,000 GET requests, ~$0.005 per 1,000 PUT requests)
+- **Cache hit**: about 0.1s (S3 GetObject). The modal does not wait for the API.
+- **Cache miss**: API latency. For about 600 accounts, the Organizations API takes about 5s (31 pages of 20).
+- **Refresh**: API latency, after the modal fills or on the schedule. No user waits for it.
+- **Cost**: S3 charges apply (~$0.005 per 1,000 GET requests, ~$0.005 per 1,000 PUT requests). The schedule adds 96 runs per day at the default rate.
 
 ## Backward Compatibility
 
@@ -279,11 +254,11 @@ If you're migrating from the TTL-based cache:
 
 ### Integration Testing
 
-1. **Test Normal Operation**: Submit access request → Verify both API and cache are called
-2. **Test Cache Update**: Change AWS data → Submit request → Verify cache is updated
-3. **Test API Fallback**: Temporarily block API access → Verify cached data is used
-4. **Test Cache Disabled**: Set `cache_enabled = false` → Verify normal operation (no S3 calls)
-5. **Test Missing Permissions**: Temporarily remove S3 IAM permissions → Verify graceful fallback to API
+1. **Cache hit**: Open the request modal → Verify that the account list shows in about 1s.
+2. **Modal refresh**: Create an account → Open the modal (old list) → Reopen it → Verify that the new account shows.
+3. **Scheduled refresh**: Check the revoker logs every 15 minutes for one `Cache refresh for` line per resource.
+4. **API outage**: Temporarily block API access → Verify that the modal still shows cached data.
+5. **Cache disabled**: Set `cache_enabled = false` → Verify normal operation (no cache reads or writes) and no refresh rule.
 
 ## Troubleshooting
 
@@ -315,13 +290,9 @@ Common causes:
 1. Check CloudWatch Logs for detailed error messages
 2. Verify IAM permissions include `s3:PutObject`
 
-### "API failed, using cached data as fallback"
-
-This is expected behavior when AWS APIs are unavailable. The application is working correctly by using cached data.
-
 ### Cache not updating
 
-If you notice the cache isn't updating when AWS data changes:
-1. Check CloudWatch Logs for cache write errors
-2. Verify S3 permissions include `s3:PutObject`
-3. Check if data comparison is working correctly (logs will show "API data differs from cache")
+If the cache does not update when AWS data changes:
+1. Search the revoker logs for `Cache refresh for`. No lines at all means the schedule is not running: check the `<revoker>-cache-refresh` EventBridge rule.
+2. A `failed` line means the API call or the write failed. Check its `error` field. For a failed write, the cause (for example `AccessDenied`) is on the `Failed to cache accounts` or `Failed to cache permission sets` line just before it.
+3. Verify that the revoker role has `s3:PutObject` on `accounts.json` and `permission_sets/*` in the config bucket.

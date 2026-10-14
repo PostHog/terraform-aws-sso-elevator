@@ -247,12 +247,20 @@ def load_select_options_for_account_access_request(client: WebClient, body: dict
         accounts = [a for a in all_accounts if a.id in eligible_account_ids]
 
     logger.debug(f"Updating view with external_id: {external_id}")
-    return _with_retries(
+    response = _with_retries(
         lambda: client.views_update(
             external_id=external_id,
             view=slack_helpers.RequestForAccessView.update_with_accounts(accounts=accounts, account_sections=cfg.account_sections),
         )
     )
+
+    # The accounts above may come from the cache. Refresh it only after views_update, so the user never waits for the
+    # Organizations API. A user who does not see a new account reopens the modal.
+    try:
+        sso.refresh_account_and_permission_set_caches(org_client=org_client, sso_client=sso_client, s3_client=s3_client, cfg=cfg)
+    except Exception:
+        logger.exception("Cache refresh failed after the modal was filled")
+    return response
 
 
 app.shortcut("request_for_access")(

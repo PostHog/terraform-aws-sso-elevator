@@ -1,7 +1,10 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
+import sso
+from entities.aws import Account, PermissionSet
 from sso import get_user_group_ids
 
 # ruff: noqa: ANN201, ANN001
@@ -91,3 +94,136 @@ class TestGetUserGroupIds:
                 identity_store_id="d-1234567890",
                 user_principal_id="user-123",
             )
+
+
+SSO_INSTANCE_ARN = "arn:aws:sso:::instance/ssoins-1111111111111111"
+PS_ADMIN = PermissionSet(name="AdministratorAccess", arn="arn:aws:sso:::permissionSet/ssoins-1111111111111111/ps-1", description=None)
+PS_READ = PermissionSet(name="ReadOnlyAccess", arn="arn:aws:sso:::permissionSet/ssoins-1111111111111111/ps-2", description=None)
+PROD = Account(id="111111111111", name="prod")
+DEV = Account(id="222222222222", name="dev")
+
+
+def _cfg(**overrides):
+    values = {
+        "cache_enabled": True,
+        "config_bucket_name": "test-config-bucket",
+        "sso_instance_arn": SSO_INSTANCE_ARN,
+        "accounts": frozenset({"*"}),
+        "permission_sets": frozenset({"*"}),
+    }
+    values.update(overrides)
+    return MagicMock(**values)
+
+
+def _sso_client(permission_sets):
+    client = MagicMock()
+    client.get_paginator.return_value.paginate.return_value = [{"PermissionSets": [ps.arn for ps in permission_sets]}]
+    by_arn = {ps.arn: ps for ps in permission_sets}
+
+    def describe(**kwargs):
+        arn = kwargs["PermissionSetArn"]
+        return {"PermissionSet": {"Name": by_arn[arn].name, "PermissionSetArn": arn}}
+
+    client.describe_permission_set.side_effect = describe
+    return client
+
+
+def _org_client(accounts):
+    client = MagicMock()
+    client.get_paginator.return_value.paginate.return_value = [{"Accounts": [{"Id": a.id, "Name": a.name} for a in accounts]}]
+    return client
+
+
+class TestListPermissionSetsWithCache:
+    def test_cache_hit_makes_no_sso_admin_call(self):
+        sso_client = _sso_client([PS_ADMIN])
+        with patch("cache.get_cached_permission_sets", return_value=[PS_ADMIN, PS_READ]):
+            result = sso.list_permission_sets_with_cache(sso_client, MagicMock(), SSO_INSTANCE_ARN, _cfg())
+
+        assert result == [PS_ADMIN, PS_READ]
+        sso_client.get_paginator.assert_not_called()
+        sso_client.describe_permission_set.assert_not_called()
+
+    def test_cache_miss_calls_api_and_writes_cache(self):
+        sso_client = _sso_client([PS_ADMIN])
+        with (
+            patch("cache.get_cached_permission_sets", return_value=None),
+            patch("cache.set_cached_permission_sets", return_value=True) as set_cached,
+        ):
+            result = sso.list_permission_sets_with_cache(sso_client, MagicMock(), SSO_INSTANCE_ARN, _cfg())
+
+        assert result == [PS_ADMIN]
+        assert set_cached.call_args.args[3] == [PS_ADMIN]
+
+
+class TestGetPermissionSetsFromConfigWithCache:
+    def test_filters_cached_permission_sets_by_name(self):
+        with patch("cache.get_cached_permission_sets", return_value=[PS_ADMIN, PS_READ]):
+            result = sso.get_permission_sets_from_config_with_cache(
+                MagicMock(), MagicMock(), _cfg(permission_sets=frozenset({"ReadOnlyAccess"}))
+            )
+
+        assert result == [PS_READ]
+
+    def test_filters_cached_permission_sets_by_arn(self):
+        with patch("cache.get_cached_permission_sets", return_value=[PS_ADMIN, PS_READ]):
+            result = sso.get_permission_sets_from_config_with_cache(
+                MagicMock(), MagicMock(), _cfg(permission_sets=frozenset({PS_ADMIN.arn}))
+            )
+
+        assert result == [PS_ADMIN]
+
+    def test_wildcard_returns_all_cached_permission_sets(self):
+        with patch("cache.get_cached_permission_sets", return_value=[PS_ADMIN, PS_READ]):
+            result = sso.get_permission_sets_from_config_with_cache(MagicMock(), MagicMock(), _cfg())
+
+        assert result == [PS_ADMIN, PS_READ]
+
+
+class TestRefreshAccountAndPermissionSetCaches:
+    def test_disabled_cache_makes_no_calls(self):
+        org_client = _org_client([PROD])
+        sso_client = _sso_client([PS_ADMIN])
+        with (
+            patch("cache.get_cached_accounts") as get_accounts,
+            patch("cache.get_cached_permission_sets") as get_permission_sets,
+        ):
+            sso.refresh_account_and_permission_set_caches(
+                org_client=org_client, sso_client=sso_client, s3_client=MagicMock(), cfg=_cfg(cache_enabled=False)
+            )
+
+        org_client.get_paginator.assert_not_called()
+        sso_client.get_paginator.assert_not_called()
+        get_accounts.assert_not_called()
+        get_permission_sets.assert_not_called()
+
+    def test_writes_both_caches_when_changed(self):
+        with (
+            patch("cache.get_cached_accounts", return_value=[PROD]),
+            patch("cache.get_cached_permission_sets", return_value=[PS_ADMIN]),
+            patch("cache.set_cached_accounts", return_value=True) as set_accounts,
+            patch("cache.set_cached_permission_sets", return_value=True) as set_permission_sets,
+        ):
+            sso.refresh_account_and_permission_set_caches(
+                org_client=_org_client([PROD, DEV]), sso_client=_sso_client([PS_ADMIN, PS_READ]), s3_client=MagicMock(), cfg=_cfg()
+            )
+
+        assert set_accounts.call_args.args[2] == [PROD, DEV]
+        assert set_permission_sets.call_args.args[3] == [PS_ADMIN, PS_READ]
+
+    def test_account_failure_still_refreshes_permission_sets(self):
+        org_client = MagicMock()
+        org_client.get_paginator.side_effect = ClientError(
+            {"Error": {"Code": "TooManyRequestsException", "Message": "Rate exceeded"}}, "ListAccounts"
+        )
+        with (
+            patch("cache.get_cached_permission_sets", return_value=[PS_ADMIN]),
+            patch("cache.set_cached_accounts") as set_accounts,
+            patch("cache.set_cached_permission_sets", return_value=True) as set_permission_sets,
+        ):
+            sso.refresh_account_and_permission_set_caches(
+                org_client=org_client, sso_client=_sso_client([PS_ADMIN, PS_READ]), s3_client=MagicMock(), cfg=_cfg()
+            )
+
+        set_accounts.assert_not_called()
+        assert set_permission_sets.call_args.args[3] == [PS_ADMIN, PS_READ]

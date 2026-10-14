@@ -9,6 +9,7 @@ import botocore.exceptions
 import entities
 import revoker
 import sso
+from events import CheckOnInconsistency, Event, RefreshCache, SSOElevatorScheduledRevocation
 
 
 def _client_error(code: str) -> botocore.exceptions.ClientError:
@@ -372,3 +373,36 @@ class TestSchedulerSweepKeepsGoingOnError:
         assert mock_remove.call_count == 3
         # Conflict assignment must NOT generate an audit entry; the other two must.
         assert mock_log.call_count == 2
+
+
+class TestRefreshCacheEvent:
+    def test_refresh_cache_payload_parses(self):
+        assert isinstance(Event.model_validate({"action": "refresh_cache"}).root, RefreshCache)
+
+    def test_existing_scheduled_payloads_still_parse(self):
+        assert isinstance(Event.model_validate({"action": "check_on_inconsistency"}).root, CheckOnInconsistency)
+        assert isinstance(Event.model_validate({"action": "sso_elevator_scheduled_revocation"}).root, SSOElevatorScheduledRevocation)
+
+    def test_handler_refreshes_both_caches(self):
+        with patch.object(revoker.sso, "refresh_account_and_permission_set_caches") as refresh:
+            assert revoker.lambda_handler({"action": "refresh_cache"}, None) is None
+
+        refresh.assert_called_once_with(
+            org_client=revoker.org_client, sso_client=revoker.sso_client, s3_client=revoker.s3_client, cfg=revoker.cfg
+        )
+
+    def test_handler_does_not_raise_when_aws_fails(self):
+        org_client = MagicMock()
+        org_client.get_paginator.side_effect = _client_error("TooManyRequestsException")
+        sso_client = MagicMock()
+        sso_client.get_paginator.side_effect = _client_error("ThrottlingException")
+        with (
+            patch.object(revoker, "org_client", org_client),
+            patch.object(revoker, "sso_client", sso_client),
+            patch("cache.set_cached_accounts") as set_accounts,
+            patch("cache.set_cached_permission_sets") as set_permission_sets,
+        ):
+            assert revoker.lambda_handler({"action": "refresh_cache"}, None) is None
+
+        set_accounts.assert_not_called()
+        set_permission_sets.assert_not_called()

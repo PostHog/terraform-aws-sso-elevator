@@ -75,6 +75,10 @@ class SSOElevatorScheduledRevocation(BaseModel):
     action: Literal["sso_elevator_scheduled_revocation"]
 
 
+class RefreshCache(BaseModel):
+    action: Literal["refresh_cache"]
+
+
 class ApproverNotificationEvent(BaseModel):
     action: Literal["approvers_renotification"]
     schedule_name: str
@@ -91,5 +95,6 @@ Event = RootModel[
         SSOElevatorScheduledRevocation,
         ApproverNotificationEvent,
         ScheduledGroupRevokeEvent,
+        RefreshCache,
     ]
 ]

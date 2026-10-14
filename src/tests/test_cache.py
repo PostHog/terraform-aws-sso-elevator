@@ -10,13 +10,16 @@ Tests cover all error handling scenarios including:
 """
 
 import json
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from botocore.exceptions import ClientError
+from hypothesis import given, strategies as st
 
 import cache as cache_module
 from entities.aws import Account, PermissionSet
+
+from . import strategies
 
 
 @pytest.fixture
@@ -294,68 +297,234 @@ class TestSetCachedPermissionSets:
         assert "permission_sets/" in call_args[1]["Key"]
 
 
-class TestCacheResilience:
-    """Tests for with_cache_resilience function."""
+SSO_INSTANCE_ARN = "arn:aws:sso:::instance/ssoins-1111111111111111"
 
-    def test_api_success_returns_api_data(self, sample_accounts):
-        """When API succeeds, should return API data (parallel execution)."""
-        cache_getter = Mock(return_value=sample_accounts)
-        api_getter = Mock(return_value=sample_accounts)
+account_st = st.builds(Account, id=strategies.aws_account_id, name=st.text(min_size=1, max_size=20))
+
+
+def _resource(cache_getter=None, api_getter=None, cache_setter=None):
+    return cache_module.CachedResource(
+        name="accounts",
+        cache_getter=cache_getter or Mock(return_value=None),
+        api_getter=api_getter or Mock(return_value=[]),
+        cache_setter=cache_setter or Mock(return_value=True),
+    )
+
+
+class TestSetterReturnValues:
+    """The setters report whether they wrote the object, so refresh_cache can log a failed write."""
+
+    def test_set_cached_accounts_returns_true_on_write(self, mock_s3_client, cache_config_enabled, sample_accounts):
+        assert cache_module.set_cached_accounts(mock_s3_client, cache_config_enabled, sample_accounts) is True
+
+    def test_set_cached_accounts_returns_false_when_disabled(self, mock_s3_client, cache_config_disabled, sample_accounts):
+        assert cache_module.set_cached_accounts(mock_s3_client, cache_config_disabled, sample_accounts) is False
+        mock_s3_client.put_object.assert_not_called()
+
+    def test_set_cached_accounts_returns_false_on_write_error(self, mock_s3_client, cache_config_enabled, sample_accounts):
+        mock_s3_client.put_object.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "PutObject")
+        assert cache_module.set_cached_accounts(mock_s3_client, cache_config_enabled, sample_accounts) is False
+
+    def test_set_cached_permission_sets_returns_true_on_write(self, mock_s3_client, cache_config_enabled, sample_permission_sets):
+        result = cache_module.set_cached_permission_sets(mock_s3_client, cache_config_enabled, SSO_INSTANCE_ARN, sample_permission_sets)
+        assert result is True
+
+    def test_set_cached_permission_sets_returns_false_when_disabled(self, mock_s3_client, cache_config_disabled, sample_permission_sets):
+        result = cache_module.set_cached_permission_sets(mock_s3_client, cache_config_disabled, SSO_INSTANCE_ARN, sample_permission_sets)
+        assert result is False
+        mock_s3_client.put_object.assert_not_called()
+
+    def test_set_cached_permission_sets_returns_false_on_write_error(self, mock_s3_client, cache_config_enabled, sample_permission_sets):
+        mock_s3_client.put_object.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "PutObject")
+        result = cache_module.set_cached_permission_sets(mock_s3_client, cache_config_enabled, SSO_INSTANCE_ARN, sample_permission_sets)
+        assert result is False
+
+
+class TestCorruptCacheObject:
+    def test_invalid_json_is_a_miss(self, mock_s3_client, cache_config_enabled):
+        mock_s3_client.get_object.return_value = {"Body": Mock(read=Mock(return_value=b"not json"))}
+        assert cache_module.get_cached_accounts(mock_s3_client, cache_config_enabled) is None
+
+    def test_old_schema_is_a_miss(self, mock_s3_client, cache_config_enabled):
+        body = json.dumps([{"account_id": "111111111111"}]).encode("utf-8")
+        mock_s3_client.get_object.return_value = {"Body": Mock(read=Mock(return_value=body))}
+        assert cache_module.get_cached_accounts(mock_s3_client, cache_config_enabled) is None
+
+
+class TestGetCacheFirst:
+    def test_cache_hit_returns_cache_without_api_call(self, sample_accounts):
+        api_getter = Mock()
         cache_setter = Mock()
+        resource = _resource(cache_getter=Mock(return_value=sample_accounts), api_getter=api_getter, cache_setter=cache_setter)
 
-        result = cache_module.with_cache_resilience(
-            cache_getter=cache_getter,
-            api_getter=api_getter,
-            cache_setter=cache_setter,
-            resource_name="test",
-        )
-
-        assert result == sample_accounts
-        cache_getter.assert_called_once()
-        api_getter.assert_called_once()
-
-    def test_api_success_with_no_cache_updates_cache(self, sample_accounts):
-        """When API succeeds and no cache, should update cache."""
-        cache_getter = Mock(return_value=None)
-        api_getter = Mock(return_value=sample_accounts)
-        cache_setter = Mock()
-
-        result = cache_module.with_cache_resilience(
-            cache_getter=cache_getter,
-            api_getter=api_getter,
-            cache_setter=cache_setter,
-            resource_name="test",
-        )
-
-        assert result == sample_accounts
-        cache_setter.assert_called_once_with(sample_accounts)
-
-    def test_api_failure_returns_cached_data(self, sample_accounts):
-        """When API fails but cache has data, should return cached data."""
-        cache_getter = Mock(return_value=sample_accounts)
-        api_getter = Mock(side_effect=Exception("API error"))
-        cache_setter = Mock()
-
-        result = cache_module.with_cache_resilience(
-            cache_getter=cache_getter,
-            api_getter=api_getter,
-            cache_setter=cache_setter,
-            resource_name="test",
-        )
-
-        assert result == sample_accounts
+        assert cache_module.get_cache_first(resource) == sample_accounts
+        api_getter.assert_not_called()
         cache_setter.assert_not_called()
 
-    def test_both_fail_raises_exception(self):
-        """When both API and cache fail, should raise exception."""
-        cache_getter = Mock(side_effect=ValueError("Cache error"))
-        api_getter = Mock(side_effect=ValueError("API error"))
-        cache_setter = Mock()
+    def test_empty_list_is_a_cache_hit(self):
+        api_getter = Mock()
+        resource = _resource(cache_getter=Mock(return_value=[]), api_getter=api_getter)
+
+        assert cache_module.get_cache_first(resource) == []
+        api_getter.assert_not_called()
+
+    def test_cache_miss_calls_api_and_writes_cache(self, sample_accounts):
+        cache_setter = Mock(return_value=True)
+        resource = _resource(api_getter=Mock(return_value=sample_accounts), cache_setter=cache_setter)
+
+        assert cache_module.get_cache_first(resource) == sample_accounts
+        cache_setter.assert_called_once_with(sample_accounts)
+
+    def test_disabled_cache_calls_api(self, mock_s3_client, cache_config_disabled, sample_accounts):
+        api_getter = Mock(return_value=sample_accounts)
+        resource = cache_module.CachedResource(
+            name="accounts",
+            cache_getter=lambda: cache_module.get_cached_accounts(mock_s3_client, cache_config_disabled),
+            api_getter=api_getter,
+            cache_setter=lambda accounts: cache_module.set_cached_accounts(mock_s3_client, cache_config_disabled, accounts),
+        )
+
+        assert cache_module.get_cache_first(resource) == sample_accounts
+        api_getter.assert_called_once()
+        mock_s3_client.get_object.assert_not_called()
+        mock_s3_client.put_object.assert_not_called()
+
+    def test_getter_error_counts_as_miss(self, sample_accounts):
+        resource = _resource(cache_getter=Mock(side_effect=RuntimeError("s3 down")), api_getter=Mock(return_value=sample_accounts))
+
+        assert cache_module.get_cache_first(resource) == sample_accounts
+
+    def test_miss_and_api_error_raises(self):
+        resource = _resource(api_getter=Mock(side_effect=ValueError("API error")))
 
         with pytest.raises(ValueError, match="API error"):
-            cache_module.with_cache_resilience(
-                cache_getter=cache_getter,
-                api_getter=api_getter,
-                cache_setter=cache_setter,
-                resource_name="test",
-            )
+            cache_module.get_cache_first(resource)
+
+    def test_setter_error_still_returns_api_data(self, sample_accounts):
+        resource = _resource(api_getter=Mock(return_value=sample_accounts), cache_setter=Mock(side_effect=RuntimeError("put failed")))
+
+        assert cache_module.get_cache_first(resource) == sample_accounts
+
+    @given(cached=st.lists(account_st, max_size=5))
+    def test_property_hit_never_calls_api(self, cached):
+        api_getter = Mock()
+        resource = _resource(cache_getter=Mock(return_value=cached), api_getter=api_getter)
+
+        assert cache_module.get_cache_first(resource) == cached
+        api_getter.assert_not_called()
+
+
+class TestRefreshCache:
+    def test_changed_data_is_written(self, sample_accounts):
+        cache_setter = Mock(return_value=True)
+        resource = _resource(
+            cache_getter=Mock(return_value=sample_accounts[:1]), api_getter=Mock(return_value=sample_accounts), cache_setter=cache_setter
+        )
+
+        cache_module.refresh_cache(resource)
+
+        cache_setter.assert_called_once_with(sample_accounts)
+
+    def test_unchanged_data_is_not_written(self, sample_accounts):
+        cache_setter = Mock(return_value=True)
+        resource = _resource(
+            cache_getter=Mock(return_value=list(sample_accounts)), api_getter=Mock(return_value=sample_accounts), cache_setter=cache_setter
+        )
+
+        cache_module.refresh_cache(resource)
+
+        cache_setter.assert_not_called()
+
+    def test_empty_cache_is_written(self, sample_accounts):
+        cache_setter = Mock(return_value=True)
+        resource = _resource(api_getter=Mock(return_value=sample_accounts), cache_setter=cache_setter)
+
+        cache_module.refresh_cache(resource)
+
+        cache_setter.assert_called_once_with(sample_accounts)
+
+    def test_api_error_does_not_raise_or_write(self):
+        cache_setter = Mock(return_value=True)
+        resource = _resource(api_getter=Mock(side_effect=RuntimeError("throttled")), cache_setter=cache_setter)
+
+        cache_module.refresh_cache(resource)
+
+        cache_setter.assert_not_called()
+
+    def test_setter_error_does_not_raise(self, sample_accounts):
+        resource = _resource(api_getter=Mock(return_value=sample_accounts), cache_setter=Mock(side_effect=RuntimeError("put failed")))
+
+        cache_module.refresh_cache(resource)
+
+    def test_getter_error_counts_as_empty_cache(self, sample_accounts):
+        cache_setter = Mock(return_value=True)
+        resource = _resource(
+            cache_getter=Mock(side_effect=RuntimeError("s3 down")), api_getter=Mock(return_value=sample_accounts), cache_setter=cache_setter
+        )
+
+        cache_module.refresh_cache(resource)
+
+        cache_setter.assert_called_once_with(sample_accounts)
+
+    def test_logs_updated(self, sample_accounts):
+        resource = _resource(api_getter=Mock(return_value=sample_accounts))
+
+        with patch.object(cache_module, "logger") as logger:
+            cache_module.refresh_cache(resource)
+
+        logger.info.assert_called_once_with("Cache refresh for accounts: updated")
+        logger.warning.assert_not_called()
+
+    def test_logs_unchanged(self, sample_accounts):
+        resource = _resource(cache_getter=Mock(return_value=list(sample_accounts)), api_getter=Mock(return_value=sample_accounts))
+
+        with patch.object(cache_module, "logger") as logger:
+            cache_module.refresh_cache(resource)
+
+        logger.info.assert_called_once_with("Cache refresh for accounts: unchanged")
+        logger.warning.assert_not_called()
+
+    def test_logs_failed_on_api_error(self):
+        resource = _resource(api_getter=Mock(side_effect=RuntimeError("throttled")))
+
+        with patch.object(cache_module, "logger") as logger:
+            cache_module.refresh_cache(resource)
+
+        logger.warning.assert_called_once()
+        assert logger.warning.call_args.args[0] == "Cache refresh for accounts: failed"
+        logger.info.assert_not_called()
+
+    def test_logs_failed_when_setter_returns_false(self, sample_accounts):
+        resource = _resource(api_getter=Mock(return_value=sample_accounts), cache_setter=Mock(return_value=False))
+
+        with patch.object(cache_module, "logger") as logger:
+            cache_module.refresh_cache(resource)
+
+        logger.warning.assert_called_once()
+        assert logger.warning.call_args.args[0] == "Cache refresh for accounts: failed"
+        logger.info.assert_not_called()
+
+    def test_logs_failed_when_setter_raises(self, sample_accounts):
+        resource = _resource(api_getter=Mock(return_value=sample_accounts), cache_setter=Mock(side_effect=RuntimeError("put failed")))
+
+        with patch.object(cache_module, "logger") as logger:
+            cache_module.refresh_cache(resource)
+
+        logger.warning.assert_called_once()
+        assert logger.warning.call_args.args[0] == "Cache refresh for accounts: failed"
+
+    @given(cached=st.none() | st.lists(account_st, max_size=5), api=st.lists(account_st, max_size=5))
+    def test_property_successful_refresh_leaves_cache_equal_to_api(self, cached, api):
+        store = {"value": cached}
+
+        def setter(value):
+            store["value"] = value
+            return True
+
+        resource = cache_module.CachedResource(
+            name="accounts", cache_getter=lambda: store["value"], api_getter=lambda: api, cache_setter=setter
+        )
+
+        cache_module.refresh_cache(resource)
+
+        assert store["value"] == api

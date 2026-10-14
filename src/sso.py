@@ -355,17 +355,33 @@ def list_permission_sets(client: SSOAdminClient, sso_instance_arn: str) -> Gener
         yield describe_permission_set(client, sso_instance_arn, permission_set_arn)
 
 
+def _permission_sets_cache(
+    sso_client: SSOAdminClient,
+    s3_client: S3Client,
+    sso_instance_arn: str,
+    cfg: config.Config,
+) -> cache_module.CachedResource[list[entities.aws.PermissionSet]]:
+    cache_config = cache_module.CacheConfig.from_config(cfg)
+    return cache_module.CachedResource(
+        name="permission_sets",
+        cache_getter=lambda: cache_module.get_cached_permission_sets(s3_client, cache_config, sso_instance_arn),
+        api_getter=lambda: list(list_permission_sets(sso_client, sso_instance_arn)),
+        cache_setter=lambda permission_sets: cache_module.set_cached_permission_sets(
+            s3_client, cache_config, sso_instance_arn, permission_sets
+        ),
+    )
+
+
 def list_permission_sets_with_cache(
     sso_client: SSOAdminClient,
     s3_client: S3Client,
     sso_instance_arn: str,
     cfg: config.Config,
 ) -> list[entities.aws.PermissionSet]:
-    """List all permission sets with cache resilience.
+    """List all permission sets, from the S3 cache if it has data.
 
-    This function calls both the SSO Admin API and S3 cache in parallel.
-    If the API call succeeds, it compares with cached data and updates if different.
-    If the API call fails, it falls back to cached data.
+    On a cache miss, this calls the SSO Admin API and writes the result to the cache.
+    refresh_permission_sets_cache keeps the cache current.
 
     Args:
         sso_client: SSO Admin client
@@ -376,16 +392,16 @@ def list_permission_sets_with_cache(
     Returns:
         List of all permission sets
     """
-    cache_config = cache_module.CacheConfig.from_config(cfg)
+    return cache_module.get_cache_first(_permission_sets_cache(sso_client, s3_client, sso_instance_arn, cfg))
 
-    return cache_module.with_cache_resilience(
-        cache_getter=lambda: cache_module.get_cached_permission_sets(s3_client, cache_config, sso_instance_arn),
-        api_getter=lambda: list(list_permission_sets(sso_client, sso_instance_arn)),
-        cache_setter=lambda permission_sets: cache_module.set_cached_permission_sets(
-            s3_client, cache_config, sso_instance_arn, permission_sets
-        ),
-        resource_name="permission_sets",
-    )
+
+def refresh_permission_sets_cache(
+    sso_client: SSOAdminClient,
+    s3_client: S3Client,
+    cfg: config.Config,
+) -> None:
+    """Fetch all permission sets from the SSO Admin API and update the S3 cache if they changed. Never raises."""
+    cache_module.refresh_cache(_permission_sets_cache(sso_client, s3_client, cfg.sso_instance_arn, cfg))
 
 
 def list_users(client: IdentityStoreClient, identity_store_id: str) -> dict:
@@ -482,11 +498,7 @@ def get_permission_sets_from_config_with_cache(
     s3_client: S3Client,
     cfg: config.Config,
 ) -> list[PermissionSet]:
-    """Get permission sets from config with cache resilience.
-
-    This function calls both the SSO Admin API and S3 cache in parallel.
-    If the API call succeeds, it compares with cached data and updates if different.
-    If the API call fails, it falls back to cached data.
+    """Get the permission sets named in the config, from the S3 cache if it has data.
 
     Args:
         sso_client: SSO Admin client
@@ -517,31 +529,19 @@ def get_account_assignment_information(
     )
 
 
-def get_account_assignment_information_with_cache(
-    sso_client: SSOAdminClient,
-    cfg: config.Config,
+def refresh_account_and_permission_set_caches(
     org_client: OrganizationsClient,
+    sso_client: SSOAdminClient,
     s3_client: S3Client,
-) -> list[AccountAssignment]:
-    """Get account assignment information with cache fallback.
-
-    Args:
-        sso_client: SSO Admin client
-        cfg: Application configuration
-        org_client: Organizations client
-        s3_client: S3 client for cache
-
-    Returns:
-        List of account assignments
-    """
-    accounts = organizations.get_accounts_from_config_with_cache(org_client, s3_client, cfg)
-    permission_sets = get_permission_sets_from_config_with_cache(sso_client, s3_client, cfg)
-    return list_user_account_assignments(
-        sso_client,
-        cfg.sso_instance_arn,
-        [a.id for a in accounts],
-        [ps.arn for ps in permission_sets],
-    )
+    cfg: config.Config,
+) -> None:
+    """Refresh the S3 caches of accounts and permission sets. Never raises."""
+    # refresh_cache does not check the flag: without this, a disabled cache would call both APIs and discard the results.
+    if not cfg.cache_enabled:
+        logger.debug("Cache is disabled, skipping cache refresh")
+        return
+    organizations.refresh_accounts_cache(org_client, s3_client, cfg)
+    refresh_permission_sets_cache(sso_client, s3_client, cfg)
 
 
 # -----------------Group Assignments-----------------#
