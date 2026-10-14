@@ -258,7 +258,7 @@ If you're migrating from the TTL-based cache:
 2. **Modal refresh**: Create an account → Open the modal (old list) → Reopen it → Verify that the new account shows.
 3. **Scheduled refresh**: Check the revoker logs every 15 minutes for one `Cache refresh for` line per resource.
 4. **API outage**: Temporarily block API access → Verify that the modal still shows cached data.
-5. **Cache disabled**: Set `cache_enabled = false` → Verify normal operation (no S3 calls) and no refresh rule.
+5. **Cache disabled**: Set `cache_enabled = false` → Verify normal operation (no cache reads or writes) and no refresh rule.
 
 ## Troubleshooting
 
@@ -294,5 +294,5 @@ Common causes:
 
 If the cache does not update when AWS data changes:
 1. Search the revoker logs for `Cache refresh for`. No lines at all means the schedule is not running: check the `<revoker>-cache-refresh` EventBridge rule.
-2. A `failed` line means the API call or the write failed. Check the `error` field.
+2. A `failed` line means the API call or the write failed. Check its `error` field. For a failed write, the cause (for example `AccessDenied`) is on the `Failed to cache accounts` or `Failed to cache permission sets` line just before it.
 3. Verify that the revoker role has `s3:PutObject` on `accounts.json` and `permission_sets/*` in the config bucket.
