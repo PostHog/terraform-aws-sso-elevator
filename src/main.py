@@ -509,10 +509,12 @@ def handle_button_click(body: dict, client: WebClient, context: BoltContext) -> 
                 text="End session early",
             )
 
-        return client.chat_postMessage(
-            channel=payload.channel_id,
-            text=text,
+        return slack_helpers.post_granted_message(
+            client,
+            channel_id=payload.channel_id,
             thread_ts=payload.thread_ts,
+            text=text,
+            with_gif=result.granted and approver.id != requester.id,
         )
     finally:
         # Always release the in-flight marker. Leaving it set on an exception made

@@ -1561,3 +1561,36 @@ class TestGroupDocsHint:
             < ids.index(RequestForGroupAccessView.GROUP_DOCS_HINT_BLOCK_ID)
             < ids.index(RequestForGroupAccessView.APPROVERS_BLOCK_ID)
         )
+
+
+class TestPostGrantedMessage:
+    GIF = "https://media.giphy.com/media/example/giphy.gif"
+
+    def _post(self, gif_url, with_gif, client=None):
+        client = client or MagicMock()
+        with patch.object(slack_helpers, "cfg", MagicMock(approval_gif_url=gif_url)):
+            slack_helpers.post_granted_message(client, channel_id="C1", thread_ts="1.2", text="Permissions granted.", with_gif=with_gif)
+        return client
+
+    def test_attaches_gif_when_configured(self):
+        client = self._post(self.GIF, with_gif=True)
+
+        kwargs = client.chat_postMessage.call_args.kwargs
+        assert kwargs["thread_ts"] == "1.2"
+        assert kwargs["text"] == "Permissions granted."
+        assert any(b["type"] == "image" and b["image_url"] == self.GIF for b in kwargs["blocks"])
+
+    @pytest.mark.parametrize(("gif_url", "with_gif"), [("", True), (GIF, False)])
+    def test_plain_text_when_unset_or_not_wanted(self, gif_url, with_gif):
+        client = self._post(gif_url, with_gif=with_gif)
+
+        client.chat_postMessage.assert_called_once_with(channel="C1", text="Permissions granted.", thread_ts="1.2")
+
+    def test_falls_back_to_text_when_slack_rejects_image(self):
+        client = MagicMock()
+        client.chat_postMessage.side_effect = [slack_sdk.errors.SlackApiError("invalid_blocks", MagicMock()), MagicMock()]
+
+        self._post(self.GIF, with_gif=True, client=client)
+
+        assert client.chat_postMessage.call_count == 2
+        assert "blocks" not in client.chat_postMessage.call_args.kwargs

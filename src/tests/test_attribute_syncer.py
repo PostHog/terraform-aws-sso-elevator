@@ -114,7 +114,8 @@ class TestSyncOperationLogging:
     summary statistics (users evaluated, groups processed, users added/removed, errors).
     """
 
-    @settings(max_examples=100)
+    # The first example pays the cold import of attribute_syncer, which can exceed the default deadline.
+    @settings(max_examples=100, deadline=None)
     @given(stats=sync_operation_stats_strategy())
     def test_sync_operation_result_logs_start_time(self, stats: dict):  # noqa: ARG002
         """
