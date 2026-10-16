@@ -170,6 +170,10 @@ class Config(BaseSettings):
     # beside the permission-set/group dropdown in the request modals. Empty = no link shown.
     access_docs_url: str = ""
 
+    # Optional GIF URL attached to the "Permissions granted" thread reply when an approver
+    # (not the requester) approves a request. Empty = no GIF.
+    approval_gif_url: str = ""
+
     s3_bucket_for_audit_entry_name: str
     s3_bucket_prefix_for_partitions: str
 
