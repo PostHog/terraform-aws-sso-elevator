@@ -57,6 +57,8 @@ module "access_requester_slack_handler" {
 
       ACCESS_DOCS_URL = var.access_docs_url
 
+      APPROVAL_GIF_URL = var.approval_gif_url
+
       POST_UPDATE_TO_SLACK = var.revoker_post_update_to_slack
 
       SSO_INSTANCE_ARN                            = local.sso_instance_arn

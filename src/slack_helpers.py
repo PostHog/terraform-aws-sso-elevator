@@ -9,12 +9,14 @@ from mypy_boto3_identitystore import IdentityStoreClient
 from mypy_boto3_sso_admin import SSOAdminClient
 from pydantic import model_validator
 from slack_sdk import WebClient
+from slack_sdk.web.slack_response import SlackResponse
 from slack_sdk.models.blocks import (
     ActionsBlock,
     Block,
     ButtonElement,
     ContextBlock,
     DividerBlock,
+    ImageBlock,
     InputBlock,
     MarkdownTextObject,
     Option,
@@ -789,6 +791,22 @@ def button_click_info_block(action: entities.ApproverAction, approver_slack_id: 
 
 def footer_info_block(text: str) -> SectionBlock:
     return SectionBlock(block_id="footer", text=MarkdownTextObject(text=text))
+
+
+def post_granted_message(client: WebClient, channel_id: str, thread_ts: str, text: str, with_gif: bool) -> SlackResponse:
+    """Post the "Permissions granted" thread reply. When `with_gif` is set and `approval_gif_url` is
+    configured, the GIF is attached. Falls back to plain text if Slack rejects the image, so a bad
+    URL never hides the grant confirmation."""
+    if with_gif and cfg.approval_gif_url:
+        blocks = [
+            SectionBlock(text=MarkdownTextObject(text=text)).to_dict(),
+            ImageBlock(image_url=cfg.approval_gif_url, alt_text="I'll allow it").to_dict(),
+        ]
+        try:
+            return client.chat_postMessage(channel=channel_id, text=text, blocks=blocks, thread_ts=thread_ts)
+        except slack_sdk.errors.SlackApiError as e:
+            logger.warning(f"Failed to post approval GIF, falling back to text: {e}")
+    return client.chat_postMessage(channel=channel_id, text=text, thread_ts=thread_ts)
 
 
 def check_if_user_is_in_channel(client: WebClient, channel_id: str, user_id: str) -> bool:

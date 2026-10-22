@@ -79,6 +79,12 @@ variable "access_docs_url" {
   default     = ""
 }
 
+variable "approval_gif_url" {
+  description = "Optional public GIF URL. When set, the GIF is attached to the 'Permissions granted' thread reply each time an approver (not the requester) approves a request. Leave blank to disable."
+  type        = string
+  default     = ""
+}
+
 variable "schedule_expression" {
   description = "recovation schedule expression (will revoke all user-level assignments unknown to the Elevator)"
   type        = string
