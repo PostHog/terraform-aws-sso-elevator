@@ -137,6 +137,9 @@ class Config(BaseSettings):
     # Optional Slack usergroup ID (e.g. `S12345`) prepended as a mention to
     # rollback-failure alerts so an admin is paged when a grant can't be auto-rolled-back.
     cleanup_alert_slack_group: str = ""
+    # Optional Slack usergroup IDs that can still approve requests but are not tagged in the
+    # channel "awaiting approval" message. Empty = every approver group is tagged.
+    approver_groups_excluded_from_mentions: list[str] = []
 
     approver_renotification_initial_wait_time: int
     approver_renotification_backoff_multiplier: int

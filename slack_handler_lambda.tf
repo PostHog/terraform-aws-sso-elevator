@@ -53,7 +53,8 @@ module "access_requester_slack_handler" {
       SLACK_ERROR_CHANNEL_ID = var.slack_error_channel_id
       SCHEDULE_GROUP_NAME    = var.schedule_group_name
 
-      CLEANUP_ALERT_SLACK_GROUP = var.cleanup_alert_slack_group
+      CLEANUP_ALERT_SLACK_GROUP              = var.cleanup_alert_slack_group
+      APPROVER_GROUPS_EXCLUDED_FROM_MENTIONS = jsonencode(var.approver_groups_excluded_from_mentions)
 
       ACCESS_DOCS_URL = var.access_docs_url
 

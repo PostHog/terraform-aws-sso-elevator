@@ -73,6 +73,12 @@ variable "cleanup_alert_slack_group" {
   default     = ""
 }
 
+variable "approver_groups_excluded_from_mentions" {
+  description = "Slack usergroup IDs (same format as `approver_groups` entries) that are not tagged in the channel 'Request awaiting approval' message. These groups can still approve requests. Leave empty to tag every approver group."
+  type        = list(string)
+  default     = []
+}
+
 variable "access_docs_url" {
   description = "Optional URL to your access documentation. When set, a 'See the access docs' link is shown beside the permission-set/group dropdown in the request modals to help requesters pick the right one. Leave blank to hide the link."
   type        = string

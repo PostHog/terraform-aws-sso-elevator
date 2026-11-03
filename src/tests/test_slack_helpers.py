@@ -15,6 +15,7 @@ from slack_helpers import (
     RequestForGroupAccessView,
     build_approver_group_mentions,
     build_approvers_preview_text,
+    build_pending_approval_text,
     format_approver_mentions,
     get_max_duration_block,
     get_usergroup_members,
@@ -530,6 +531,43 @@ class TestBuildApproverGroupMentions:
         """Empty frozenset returns empty string."""
         result = build_approver_group_mentions(frozenset())
         assert result == ""
+
+
+class TestBuildPendingApprovalText:
+    """Tests for build_pending_approval_text — the channel ping for a pending request."""
+
+    def _decision(self, approver_groups: frozenset[str]):
+        import access_control
+
+        return access_control.AccessRequestDecision(
+            grant=False,
+            reason=access_control.DecisionReason.RequiresApproval,
+            based_on_statements=frozenset(),
+            approvers=frozenset(),
+            approver_groups=approver_groups,
+        )
+
+    def _cfg(self, excluded: list[str]) -> MagicMock:
+        cfg = MagicMock()
+        cfg.approver_groups_excluded_from_mentions = excluded
+        return cfg
+
+    def test_tags_all_approver_groups_by_default(self):
+        text, dm_text, _ = build_pending_approval_text(MagicMock(), self._decision(frozenset(["GRP1", "GRP2"])), self._cfg([]))
+        assert "<!subteam^GRP1>" in text
+        assert "<!subteam^GRP2>" in text
+        assert text.endswith("Request awaiting approval.")
+
+    def test_excluded_group_is_not_tagged_in_channel(self):
+        text, dm_text, _ = build_pending_approval_text(MagicMock(), self._decision(frozenset(["GRP1", "GRP2"])), self._cfg(["GRP2"]))
+        assert "<!subteam^GRP1>" in text
+        assert "<!subteam^GRP2>" not in text
+        assert "<!subteam^GRP2>" in dm_text
+
+    def test_all_groups_excluded_still_posts_request(self):
+        text, _, status = build_pending_approval_text(MagicMock(), self._decision(frozenset(["GRP1"])), self._cfg(["GRP1"]))
+        assert text == "Request awaiting approval."
+        assert status is not None
 
 
 class TestFormatApproverMentions:

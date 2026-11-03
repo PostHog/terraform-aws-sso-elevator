@@ -996,6 +996,7 @@ def build_pending_approval_text(client: WebClient, decision, cfg: "config.Config
     """
     approvers, approver_emails_not_found = find_approvers_in_slack(client, decision.approvers)
     group_mentions = build_approver_group_mentions(decision.approver_groups)
+    channel_group_mentions = build_approver_group_mentions(decision.approver_groups - frozenset(cfg.approver_groups_excluded_from_mentions))
 
     if not approvers and not decision.approver_groups:
         return (
@@ -1008,7 +1009,8 @@ def build_pending_approval_text(client: WebClient, decision, cfg: "config.Config
 
     mention_approvers = " ".join(f"<@{approver.id}>" for approver in approvers)
     all_mentions = " ".join(filter(None, [mention_approvers, group_mentions]))
-    text = f"{all_mentions} Request awaiting approval."
+    channel_mentions = " ".join(filter(None, [mention_approvers, channel_group_mentions]))
+    text = " ".join(filter(None, [channel_mentions, "Request awaiting approval."]))
     if approver_emails_not_found:
         missing_emails = ", ".join(approver_emails_not_found)
         text += (
