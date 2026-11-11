@@ -79,6 +79,12 @@ variable "access_docs_url" {
   default     = ""
 }
 
+variable "new_user_docs_url" {
+  description = "Optional URL to your instructions for adding a user to AWS SSO. When set, the message for a requester who is not found in AWS SSO links to these instructions. Leave blank to point the requester at the SSO Elevator logs instead."
+  type        = string
+  default     = ""
+}
+
 variable "schedule_expression" {
   description = "recovation schedule expression (will revoke all user-level assignments unknown to the Elevator)"
   type        = string

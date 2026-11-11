@@ -170,6 +170,10 @@ class Config(BaseSettings):
     # beside the permission-set/group dropdown in the request modals. Empty = no link shown.
     access_docs_url: str = ""
 
+    # Optional URL to instructions for adding a user to AWS SSO. When set, the "user not found in
+    # AWS SSO" message links to it. Empty = the message points at the SSO Elevator logs.
+    new_user_docs_url: str = ""
+
     s3_bucket_for_audit_entry_name: str
     s3_bucket_prefix_for_partitions: str
 

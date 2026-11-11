@@ -87,6 +87,7 @@ class TestErrorHandlerText:
         cfg = MagicMock()
         cfg.slack_channel_id = "C1"
         cfg.error_channel_id = "C_ERR"
+        cfg.new_user_docs_url = ""
         logger = MagicMock()
 
         errors.error_handler(client=client, e=errors.SSOUserNotFound("no user"), logger=logger, context=context, cfg=cfg)
@@ -104,8 +105,31 @@ class TestErrorHandlerText:
         cfg = MagicMock()
         cfg.slack_channel_id = "C1"
         cfg.error_channel_id = "C_ERR"
+        cfg.new_user_docs_url = ""
         logger = MagicMock()
 
         errors.error_handler(client=client, e=errors.SSOUserNotFound("no user"), logger=logger, context=context, cfg=cfg)
 
         assert client.chat_postMessage.call_args.kwargs["channel"] == "C1"
+
+
+class TestSSOUserNotFoundMessage:
+    def _cfg(self, new_user_docs_url: str) -> MagicMock:
+        cfg = MagicMock()
+        cfg.new_user_docs_url = new_user_docs_url
+        return cfg
+
+    def test_links_new_user_docs_when_set(self):
+        text = errors.sso_user_not_found_message("U_REQUESTER", self._cfg("https://docs.example/new-user"))
+
+        assert text.startswith("<@U_REQUESTER> Your request for AWS permissions failed")
+        assert "<https://docs.example/new-user|these instructions>" in text
+        # The requester cannot read the Lambda logs, so the link replaces that pointer.
+        assert "SSO Elevator logs" not in text
+
+    def test_points_to_logs_when_unset(self):
+        text = errors.sso_user_not_found_message("U_REQUESTER", self._cfg(""))
+
+        assert "not found in AWS SSO" in text
+        assert "SSO Elevator logs" in text
+        assert "these instructions" not in text

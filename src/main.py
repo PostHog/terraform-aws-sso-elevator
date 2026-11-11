@@ -136,10 +136,7 @@ def build_initial_form_handler(
         except SSOUserNotFound:
             client.chat_postMessage(
                 channel=cfg.slack_channel_id,
-                text=f"<@{body.get('user', {}).get('id') or 'UNKNOWN_USER'}>,"
-                "Your request for AWS permissions failed because your user was not found in AWS SSO. "
-                "This often happens if you haven't yet been added to AWS, or if your AWS SSO email differs from your Slack email. "
-                "Please check the SSO Elevator logs for more details.",
+                text=errors.sso_user_not_found_message(body.get("user", {}).get("id") or "UNKNOWN_USER", cfg),
             )
             raise
 
