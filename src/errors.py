@@ -42,6 +42,17 @@ def is_resource_not_found_exception(e: BaseException) -> bool:
     return isinstance(e, botocore.exceptions.ClientError) and e.response.get("Error", {}).get("Code") == "ResourceNotFoundException"
 
 
+def sso_user_not_found_message(user_id: str, cfg: config.Config) -> str:
+    text = (
+        f"<@{user_id}> Your request for AWS permissions failed because your user was not found in AWS SSO. "
+        "This often happens if you haven't yet been added to AWS, or if your AWS SSO email differs from your Slack email. "
+    )
+    if cfg.new_user_docs_url:
+        # Requesters cannot read the Lambda logs, so point them at the onboarding steps instead.
+        return text + f"To get added to AWS, follow <{cfg.new_user_docs_url}|these instructions>."
+    return text + "Please check the SSO Elevator logs for more details."
+
+
 def error_handler(client: WebClient, e: Exception, logger: Logger, context: BoltContext, cfg: config.Config) -> None:
     logger.exception("An error occurred:", exc_info=e)
     user_id = context.get("user_id", "UNKNOWN_USER")
@@ -58,11 +69,7 @@ def error_handler(client: WebClient, e: Exception, logger: Logger, context: Bolt
     if isinstance(e, SSOUserNotFound):
         # Requester-facing feedback: keep it in the main request channel so the requester sees
         # why their request failed.
-        text = (
-            f"<@{user_id}> Your request for AWS permissions failed because your user was not found in AWS SSO. "
-            "This often happens if you haven't yet been added to AWS, or if your AWS SSO email differs from your Slack email. "
-            "Please check the SSO Elevator logs for more details."
-        )
+        text = sso_user_not_found_message(user_id, cfg)
         channel = cfg.slack_channel_id
     else:
         # The tagged user is whoever triggered the action (requester on submission, approver on

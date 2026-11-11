@@ -1700,6 +1700,34 @@ class TestWithRetries:
                 main._with_retries(always, attempts=3)
 
 
+class TestInitialFormSSOUserNotFound:
+    """The /awsaccess shortcut checks the requester exists in AWS SSO before it opens the modal."""
+
+    def test_posts_new_user_docs_link_and_reraises(self, import_main):
+        main = import_main
+        import slack_helpers
+        from errors import SSOUserNotFound
+
+        client = MagicMock()
+        handler = main.build_initial_form_handler(view_class=slack_helpers.RequestForAccessView)
+
+        with (
+            patch.object(main.cfg, "statements", frozenset({MagicMock()})),
+            patch.object(main.cfg, "new_user_docs_url", "https://docs.example/new-user"),
+            patch.object(main.sso, "get_identity_store_id", return_value="d-123456"),
+            patch.object(main.slack_helpers, "get_user", return_value=MagicMock(email="new.user@example.com")),
+            patch.object(main.sso, "get_user_principal_id_by_email", side_effect=SSOUserNotFound("not found")),
+            pytest.raises(SSOUserNotFound),
+        ):
+            handler(client=client, body={"user": {"id": "U_NEW"}, "trigger_id": "T1"}, ack=MagicMock())
+
+        kwargs = client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == main.cfg.slack_channel_id
+        assert kwargs["text"].startswith("<@U_NEW> Your request for AWS permissions failed")
+        assert "<https://docs.example/new-user|these instructions>" in kwargs["text"]
+        client.views_open.assert_not_called()
+
+
 class TestAcknowledgeRequestForAccess:
     """The account view ack rejects submissions with no permission set selected."""
 

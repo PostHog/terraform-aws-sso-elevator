@@ -55,7 +55,8 @@ module "access_requester_slack_handler" {
 
       CLEANUP_ALERT_SLACK_GROUP = var.cleanup_alert_slack_group
 
-      ACCESS_DOCS_URL = var.access_docs_url
+      ACCESS_DOCS_URL   = var.access_docs_url
+      NEW_USER_DOCS_URL = var.new_user_docs_url
 
       POST_UPDATE_TO_SLACK = var.revoker_post_update_to_slack
 
