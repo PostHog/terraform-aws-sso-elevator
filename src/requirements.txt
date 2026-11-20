@@ -4,10 +4,6 @@ annotated-types==0.7.0 \
     --hash=sha256:1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53 \
     --hash=sha256:aff07c09a53a08bc8cfccb9c85b05f1aa9a2a6f23728d790723543408344ce89
     # via pydantic
-backoff==2.2.1 \
-    --hash=sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba \
-    --hash=sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8
-    # via posthog
 boto3-stubs==1.40.58 \
     --hash=sha256:ab239c73090eb8c4ac25bfe254ed79da83b697bb3033140c722b07a02734abd3 \
     --hash=sha256:b05368b92e2835bca7b015f39c00fd61c35cb127ab37e95361dc7aa9937b968e
@@ -106,9 +102,9 @@ mypy-boto3-sso-admin==1.40.37 \
     --hash=sha256:220dfb5f750d10df0df9660a339278d4ce4f6480d67858873cae1cfa7374ecd7 \
     --hash=sha256:4e20aaa7cd07e283f60f2c8ca0a50caa775a78fb63e40873856724fd59bcd800
     # via boto3-stubs
-posthog==7.8.0 \
-    --hash=sha256:5f46730090be503a9d4357905d3260178ed6be4c1f6c666e8d7b44189e11fbb8 \
-    --hash=sha256:fefa48c560c51ca0acc6261c92a8f61a067a8aa977c8820d0f149eaa4500e4da
+posthog==8.1.0 \
+    --hash=sha256:0b62485673d9554090ebbe0c85e34d77fe2378b778d8a1cb43d716156536dec4 \
+    --hash=sha256:2c862b3956f64d6fe8d26542a8557e4ec97d61b9448a6645ae34114ab9b5a6b8
     # via sso-elevator
 pydantic==2.12.3 \
     --hash=sha256:1da1c82b0fc140bb0103bc1441ffe062154c8d38491189751ee00fd8ca65ce74 \
@@ -164,9 +160,7 @@ pydantic-settings==2.11.0 \
 python-dateutil==2.9.0.post0 \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
-    # via
-    #   croniter
-    #   posthog
+    # via croniter
 python-dotenv==1.2.3 \
     --hash=sha256:904552145e8bfed22162c09dab1c2b9b54fefa7b23ba780f4f26ca0316b0f0d9 \
     --hash=sha256:a20a594dabeaa385725aa239d5244871c143ecb356add8a20fcf23773a6c3a35
@@ -182,9 +176,7 @@ requests==2.34.2 \
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
     --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81
-    # via
-    #   posthog
-    #   python-dateutil
+    # via python-dateutil
 types-awscrt==0.28.2 \
     --hash=sha256:4349b6fc7b1cd9c9eb782701fb213875db89ab1781219c0e947dd7c4d9dcd65e \
     --hash=sha256:d08916fa735cfc032e6a8cfdac92785f1c4e88623999b224ea4e6267d5de5fcb
