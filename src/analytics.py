@@ -44,7 +44,7 @@ def get_posthog_client() -> types.ModuleType | None:
 
     import posthog
 
-    posthog.api_key = api_key
+    posthog.project_api_key = api_key
     posthog.host = os.environ.get("POSTHOG_HOST", "https://us.i.posthog.com")
     return posthog
 
